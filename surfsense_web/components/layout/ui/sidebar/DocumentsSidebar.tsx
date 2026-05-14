@@ -458,6 +458,23 @@ function AuthenticatedDocumentsSidebarBase({
 	const [zeroAllDocs, zeroAllDocsResult] = useQuery(queries.documents.bySpace({ searchSpaceId }));
 	const [agentCreatedDocs, setAgentCreatedDocs] = useAtom(agentCreatedDocumentsAtom);
 
+	// Evita piscar entre skeleton e árvore quando o Zero reconecta (type deixa de ser "complete" por instantes).
+	const [cloudZeroHydrated, setCloudZeroHydrated] = useState(false);
+	useEffect(() => {
+		setCloudZeroHydrated(false);
+	}, [searchSpaceId]);
+	useEffect(() => {
+		if (zeroFoldersResult.type === "complete" && zeroAllDocsResult.type === "complete") {
+			setCloudZeroHydrated(true);
+		}
+	}, [searchSpaceId, zeroFoldersResult.type, zeroAllDocsResult.type]);
+	// Escape: self-hosted com zero-cache/auth instável pode nunca marcar "complete" — não prender o utilizador no skeleton
+	useEffect(() => {
+		if (cloudZeroHydrated) return;
+		const t = window.setTimeout(() => setCloudZeroHydrated(true), 4000);
+		return () => window.clearTimeout(t);
+	}, [searchSpaceId, cloudZeroHydrated]);
+
 	const treeFolders: FolderDisplay[] = useMemo(
 		() =>
 			(zeroFolders ?? []).map((f) => ({
@@ -1047,6 +1064,7 @@ function AuthenticatedDocumentsSidebarBase({
 			: "cloud";
 	const showCloudSkeleton =
 		currentFilesystemTab === "cloud" &&
+		!cloudZeroHydrated &&
 		(zeroFoldersResult.type !== "complete" || zeroAllDocsResult.type !== "complete");
 
 	const cloudContent = (

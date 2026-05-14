@@ -1,0 +1,23 @@
+# Sobrescreve o frontend para build local (inclui alterações em surfsense_web).
+# Backend local: necessário para migrar a BD além da revisão 126 da imagem ghcr
+# (migrações 127–142: zero_publication + user, turn_id, créditos, etc.).
+# Remova este ficheiro para voltar às imagens publicadas.
+
+services:
+  backend:
+    build:
+      context: ../surfsense_backend
+      dockerfile: Dockerfile
+    image: surfsense-backend:local-dev
+
+  celery_worker:
+    image: surfsense-backend:local-dev
+
+  celery_beat:
+    image: surfsense-backend:local-dev
+
+  frontend:
+    build:
+      context: ../surfsense_web
+      dockerfile: Dockerfile
+    image: surfsense-web:local-dev

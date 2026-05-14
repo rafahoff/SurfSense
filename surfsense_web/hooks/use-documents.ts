@@ -224,6 +224,9 @@ export function useDocuments(
 		}
 
 		const liveIds = new Set(validItems.map((d) => d.id));
+		// Com liveIds vazio (Zero ainda não sincronizou), o filter abaixo removia 100% dos itens
+		// vindos da API. Só aplicar remoção por “não está no Zero” quando já há snapshot útil.
+		const shouldPruneToZero = liveIds.size > 0;
 
 		setDocuments((prev) => {
 			const prevIds = new Set(prev.map((d) => d.id));
@@ -265,7 +268,9 @@ export function useDocuments(
 				return existing;
 			});
 
-			updated = updated.filter((doc) => liveIds.has(doc.id));
+			if (shouldPruneToZero) {
+				updated = updated.filter((doc) => liveIds.has(doc.id));
+			}
 
 			if (newItems.length > 0) {
 				return [...newItems, ...updated];
@@ -274,12 +279,14 @@ export function useDocuments(
 			return updated;
 		});
 
-		const counts: Record<string, number> = {};
-		for (const item of validItems) {
-			counts[item.documentType] = (counts[item.documentType] || 0) + 1;
+		if (shouldPruneToZero) {
+			const counts: Record<string, number> = {};
+			for (const item of validItems) {
+				counts[item.documentType] = (counts[item.documentType] || 0) + 1;
+			}
+			setTypeCounts(counts);
+			setTotal(validItems.length);
 		}
-		setTypeCounts(counts);
-		setTotal(validItems.length);
 	}, [searchSpaceId, zeroDocuments, populateUserCache]);
 
 	// EFFECT 3: Reset on search space change

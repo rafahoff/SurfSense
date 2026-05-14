@@ -639,6 +639,8 @@ export default function NewChatPage() {
 			queryKey: ["document-titles", prefetchParams],
 			queryFn: () => documentsApiService.searchDocumentTitles({ queryParams: prefetchParams }),
 			staleTime: 60 * 1000,
+			// Prefetch opcional: erros não disparam o toast global do QueryClient
+			meta: { suppressGlobalErrorToast: true },
 		});
 
 		queryClient.prefetchQuery({
@@ -648,6 +650,7 @@ export default function NewChatPage() {
 					queryParams: { page: 0, page_size: 20 },
 				}),
 			staleTime: 3 * 60 * 1000,
+			meta: { suppressGlobalErrorToast: true },
 		});
 	}, [searchSpaceId, queryClient]);
 

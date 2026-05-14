@@ -49,6 +49,9 @@ export const uploadDocumentMutationAtom = atomWithMutation((get) => {
 			queryClient.invalidateQueries({
 				queryKey: cacheKeys.logs.summary(searchSpaceId ?? undefined),
 			});
+			// Recarrega listagens que ainda usam TanStack Query direto ao endpoint /documents
+			queryClient.invalidateQueries({ queryKey: ["documents"], exact: false });
+			queryClient.invalidateQueries({ queryKey: ["documents-with-queries"], exact: false });
 		},
 	};
 });
