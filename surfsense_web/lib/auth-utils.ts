@@ -1,7 +1,7 @@
 /**
  * Authentication utilities for handling token expiration and redirects
  */
-
+import { BACKEND_URL } from "@/lib/env-config";
 const REDIRECT_PATH_KEY = "surfsense_redirect_path";
 const BEARER_TOKEN_KEY = "surfsense_bearer_token";
 const REFRESH_TOKEN_KEY = "surfsense_refresh_token";
@@ -60,10 +60,18 @@ export function handleUnauthorized(): void {
 		const currentPath = pathname + window.location.search + window.location.hash;
 		const excludedPaths = ["/auth", "/auth/callback", "/"];
 		if (!excludedPaths.includes(pathname)) {
-			localStorage.setItem(REDIRECT_PATH_KEY, currentPath);
+			setRedirectPath(currentPath);
 		}
 		window.location.href = getLoginPath();
 	}
+}
+
+/**
+ * Stores the path to redirect to after successful authentication.
+ */
+export function setRedirectPath(path: string): void {
+	if (typeof window === "undefined") return;
+	localStorage.setItem(REDIRECT_PATH_KEY, path);
 }
 
 /**
@@ -186,8 +194,7 @@ export async function logout(): Promise<boolean> {
 	// Call backend to revoke the refresh token
 	if (refreshToken) {
 		try {
-			const backendUrl = process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL || "http://localhost:8000";
-			const response = await fetch(`${backendUrl}/auth/jwt/revoke`, {
+			const response = await fetch(`${BACKEND_URL}/auth/jwt/revoke`, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
@@ -230,7 +237,7 @@ export function redirectToLogin(): void {
 	// Don't save auth-related paths or home page
 	const excludedPaths = ["/auth", "/auth/callback", "/", "/login", "/register", "/desktop/login"];
 	if (!excludedPaths.includes(window.location.pathname)) {
-		localStorage.setItem(REDIRECT_PATH_KEY, currentPath);
+		setRedirectPath(currentPath);
 	}
 
 	window.location.href = getLoginPath();
@@ -265,8 +272,7 @@ export async function refreshAccessToken(): Promise<string | null> {
 	isRefreshing = true;
 	refreshPromise = (async () => {
 		try {
-			const backendUrl = process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL || "http://localhost:8000";
-			const response = await fetch(`${backendUrl}/auth/jwt/refresh`, {
+			const response = await fetch(`${BACKEND_URL}/auth/jwt/refresh`, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",

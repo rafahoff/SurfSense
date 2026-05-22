@@ -29,6 +29,8 @@ export const documentTypeEnum = z.enum([
 	"LOCAL_FOLDER_FILE",
 	"SURFSENSE_DOCS",
 	"NOTE",
+	"USER_MEMORY",
+	"TEAM_MEMORY",
 	"COMPOSIO_GOOGLE_DRIVE_CONNECTOR",
 	"COMPOSIO_GMAIL_CONNECTOR",
 	"COMPOSIO_GOOGLE_CALENDAR_CONNECTOR",
@@ -88,6 +90,7 @@ export const surfsenseDocsDocument = z.object({
 	id: z.number(),
 	title: z.string(),
 	source: z.string(),
+	public_url: z.string(),
 	content: z.string(),
 });
 

@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { authenticatedFetch } from "@/lib/auth-utils";
 import type { ConnectorConfigProps } from "../index";
-
+import { BACKEND_URL } from "@/lib/env-config";
 export interface CirclebackConfigProps extends ConnectorConfigProps {
 	onNameChange?: (name: string) => void;
 }
@@ -42,7 +42,7 @@ export const CirclebackConfig: FC<CirclebackConfigProps> = ({ connector, onNameC
 		const doFetch = async () => {
 			if (!connector.search_space_id) return;
 
-			const baseUrl = process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL;
+			const baseUrl = BACKEND_URL;
 			if (!baseUrl) {
 				console.error("NEXT_PUBLIC_FASTAPI_BACKEND_URL is not configured");
 				setIsLoading(false);
@@ -166,10 +166,10 @@ export const CirclebackConfig: FC<CirclebackConfigProps> = ({ connector, onNameC
 				)}
 
 				{webhookInfo && (
-					<Alert className="bg-slate-400/5 dark:bg-white/5 border-slate-400/20">
-						<Info className="h-3 w-3 sm:h-4 sm:w-4" />
-						<AlertTitle className="text-xs sm:text-sm">Configuration Instructions</AlertTitle>
-						<AlertDescription className="text-[10px] sm:text-xs mt-1">
+					<Alert>
+						<Info />
+						<AlertTitle>Configuration Instructions</AlertTitle>
+						<AlertDescription>
 							Configure this URL in Circleback Settings → Automations → Create automation → Send
 							webhook request. The webhook will automatically send meeting notes, transcripts, and
 							action items to this search space.

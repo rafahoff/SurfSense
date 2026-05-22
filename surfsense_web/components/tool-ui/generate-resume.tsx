@@ -9,9 +9,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { openReportPanelAtom, reportPanelAtom } from "@/atoms/chat/report-panel.atom";
 import { TextShimmerLoader } from "@/components/prompt-kit/loader";
+import { Button } from "@/components/ui/button";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { baseApiService } from "@/lib/apis/base-api.service";
 import { getAuthHeaders } from "@/lib/auth-utils";
+import { BACKEND_URL } from "@/lib/env-config";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 	"pdfjs-dist/build/pdf.worker.min.mjs",
@@ -221,7 +223,7 @@ function ResumeCard({
 		const previewPath = shareToken
 			? `/api/v1/public/${shareToken}/reports/${reportId}/preview`
 			: `/api/v1/reports/${reportId}/preview`;
-		setPdfUrl(`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}${previewPath}`);
+		setPdfUrl(`${BACKEND_URL}${previewPath}`);
 
 		if (autoOpen && isDesktop && !autoOpenedRef.current) {
 			autoOpenedRef.current = true;
@@ -281,10 +283,11 @@ function ResumeCard({
 		<div
 			className={`my-4 max-w-lg overflow-hidden rounded-2xl border bg-muted/30 transition-[box-shadow] duration-300 ${isActive ? "ring-1 ring-primary/50" : ""}`}
 		>
-			<button
+			<Button
+				variant="ghost"
 				type="button"
 				onClick={handleOpen}
-				className="w-full text-left transition-colors hover:bg-muted/50 focus:outline-none focus-visible:outline-none cursor-pointer select-none"
+				className="h-auto w-full flex-col items-stretch justify-start gap-0 rounded-2xl p-0 text-left font-normal whitespace-normal transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:outline-none cursor-pointer select-none"
 			>
 				<div className="px-5 pt-5 pb-4">
 					<p className="text-sm font-semibold text-foreground line-clamp-2">{title}</p>
@@ -316,7 +319,7 @@ function ResumeCard({
 						</div>
 					)}
 				</div>
-			</button>
+			</Button>
 		</div>
 	);
 }

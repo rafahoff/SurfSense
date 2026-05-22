@@ -110,6 +110,19 @@ def load_global_llm_configs():
         except Exception as e:
             print(f"Warning: Failed to score global LLM configs: {e}")
 
+        # Planner LLM is a singleton role. If an operator accidentally
+        # marks multiple configs ``is_planner: true``, only the first one
+        # is used at runtime — surface the others at startup so the
+        # mistake is caught before traffic, not silently buried.
+        planner_cfgs = [c for c in configs if c.get("is_planner") is True]
+        if len(planner_cfgs) > 1:
+            extra_ids = [c.get("id") for c in planner_cfgs[1:]]
+            print(
+                "Warning: Multiple global LLM configs marked is_planner=true "
+                f"(ids {[c.get('id') for c in planner_cfgs]}); using id "
+                f"{planner_cfgs[0].get('id')} and ignoring {extra_ids}"
+            )
+
         return configs
     except Exception as e:
         print(f"Warning: Failed to load global LLM configs: {e}")
@@ -473,10 +486,16 @@ def initialize_vision_llm_router():
 class Config:
     # Check if ffmpeg is installed
     if not is_ffmpeg_installed():
-        import static_ffmpeg
+        allow_static_ffmpeg = (
+            os.getenv("SURFSENSE_ALLOW_STATIC_FFMPEG_DOWNLOAD", "TRUE").upper()
+            == "TRUE"
+        )
+        if allow_static_ffmpeg:
+            import static_ffmpeg
 
-        # ffmpeg installed on first call to add_paths(), threadsafe.
-        static_ffmpeg.add_paths()
+            # ffmpeg installed on first call to add_paths(), threadsafe.
+            static_ffmpeg.add_paths()
+
         # check if ffmpeg is installed again
         if not is_ffmpeg_installed():
             raise ValueError(

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
@@ -41,6 +42,9 @@ from app.agents.new_chat.path_resolver import (
     doc_to_virtual_path,
 )
 from app.db import Document, shielded_async_session
+from app.utils.perf import get_perf_logger
+
+_perf_log = get_perf_logger()
 
 try:
     from litellm import token_counter
@@ -105,12 +109,14 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         llm: BaseChatModel | None = None,
         max_entries: int = MAX_TREE_ENTRIES,
         max_tokens: int = MAX_TREE_TOKENS,
+        inject_system_message: bool = True,  # For backwards compatibility
     ) -> None:
         self.search_space_id = search_space_id
         self.filesystem_mode = filesystem_mode
         self.llm = llm
         self.max_entries = max_entries
         self.max_tokens = max_tokens
+        self.inject_system_message = inject_system_message
         self._cache: dict[tuple[int, int, bool], str] = {}
 
     async def abefore_agent(  # type: ignore[override]
@@ -122,6 +128,7 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         if self.filesystem_mode != FilesystemMode.CLOUD:
             return None
 
+        start = time.perf_counter()
         update: dict[str, Any] = {}
         if not state.get("cwd"):
             update["cwd"] = DOCUMENTS_ROOT
@@ -129,13 +136,28 @@ class KnowledgeTreeMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         anon_doc = state.get("kb_anon_doc")
         if anon_doc:
             tree_msg = self._render_anon_tree(anon_doc)
+            cache_outcome = "anon"
         else:
+            version = int(state.get("tree_version") or 0)
+            cache_key = (self.search_space_id, version, False)
+            cache_outcome = "hit" if cache_key in self._cache else "miss"
             tree_msg = await self._render_kb_tree(state)
 
-        messages = list(state.get("messages") or [])
-        insert_at = max(len(messages) - 1, 0)
-        messages.insert(insert_at, SystemMessage(content=tree_msg))
-        update["messages"] = messages
+        update["workspace_tree_text"] = tree_msg
+
+        if self.inject_system_message:
+            messages = list(state.get("messages") or [])
+            insert_at = max(len(messages) - 1, 0)
+            messages.insert(insert_at, SystemMessage(content=tree_msg))
+            update["messages"] = messages
+
+        _perf_log.info(
+            "[knowledge_tree] cache=%s chars=%d elapsed=%.3fs space=%d",
+            cache_outcome,
+            len(tree_msg),
+            time.perf_counter() - start,
+            self.search_space_id,
+        )
         return update
 
     def before_agent(  # type: ignore[override]

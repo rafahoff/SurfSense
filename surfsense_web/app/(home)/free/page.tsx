@@ -1,6 +1,9 @@
 import { SquareArrowOutUpRight } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { AdUnit } from "@/components/ads/ad-unit";
+import { ADSENSE_SLOTS } from "@/components/ads/adsense-config";
+import { AdSenseScript } from "@/components/ads/adsense-script";
 import { BreadcrumbNav } from "@/components/seo/breadcrumb-nav";
 import { FAQJsonLd, JsonLd } from "@/components/seo/json-ld";
 import { Badge } from "@/components/ui/badge";
@@ -64,13 +67,13 @@ export const metadata: Metadata = {
 		"notebooklm alternative",
 	],
 	alternates: {
-		canonical: "https://surfsense.com/free",
+		canonical: "https://www.surfsense.com/free",
 	},
 	openGraph: {
 		title: "Free AI Chat, No Login Required | SurfSense",
 		description:
 			"Use ChatGPT free online without login. Chat with GPT-4, Claude AI, Gemini and 100+ AI models. Open source NotebookLM alternative.",
-		url: "https://surfsense.com/free",
+		url: "https://www.surfsense.com/free",
 		siteName: "SurfSense",
 		type: "website",
 		images: [
@@ -157,6 +160,7 @@ export default async function FreeHubPage() {
 
 	return (
 		<div className="min-h-screen pt-20">
+			<AdSenseScript />
 			<JsonLd
 				data={{
 					"@context": "https://schema.org",
@@ -164,8 +168,8 @@ export default async function FreeHubPage() {
 					name: "ChatGPT Free Online Without Login - SurfSense",
 					description:
 						"Use ChatGPT, Claude AI, Gemini and more AI models free online without login or sign-up. Open source NotebookLM alternative with no login required.",
-					url: "https://surfsense.com/free",
-					isPartOf: { "@type": "WebSite", name: "SurfSense", url: "https://surfsense.com" },
+					url: "https://www.surfsense.com/free",
+					isPartOf: { "@type": "WebSite", name: "SurfSense", url: "https://www.surfsense.com" },
 					mainEntity: {
 						"@type": "ItemList",
 						numberOfItems: seoModels.length,
@@ -173,7 +177,7 @@ export default async function FreeHubPage() {
 							"@type": "ListItem",
 							position: i + 1,
 							name: m.name,
-							url: `https://surfsense.com/free/${m.seo_slug}`,
+							url: `https://www.surfsense.com/free/${m.seo_slug}`,
 						})),
 					},
 				}}
@@ -215,6 +219,14 @@ export default async function FreeHubPage() {
 				</section>
 
 				<Separator className="my-12 max-w-4xl mx-auto" />
+
+				{/* In-content ad: above the model table */}
+				<aside
+					aria-label="Advertisement"
+					className="max-w-4xl mx-auto mb-8 min-h-[100px]"
+				>
+					<AdUnit slot={ADSENSE_SLOTS.freeHubInContent} />
+				</aside>
 
 				{/* Model Table */}
 				{seoModels.length > 0 ? (
@@ -339,6 +351,14 @@ export default async function FreeHubPage() {
 				</section>
 
 				<Separator className="my-12 max-w-4xl mx-auto" />
+
+				{/* In-content ad: after CTA, before FAQ */}
+				<aside
+					aria-label="Advertisement"
+					className="max-w-3xl mx-auto my-8 min-h-[100px]"
+				>
+					<AdUnit slot={ADSENSE_SLOTS.freeHubBeforeFaq} />
+				</aside>
 
 				{/* FAQ */}
 				<section className="max-w-3xl mx-auto">

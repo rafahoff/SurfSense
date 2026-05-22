@@ -41,9 +41,9 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-	metadataBase: new URL("https://surfsense.com"),
+	metadataBase: new URL("https://www.surfsense.com"),
 	alternates: {
-		canonical: "https://surfsense.com",
+		canonical: "https://www.surfsense.com",
 	},
 	title: "SurfSense – Open Source, Privacy-Focused NotebookLM Alternative for Teams",
 	description:
@@ -90,7 +90,7 @@ export const metadata: Metadata = {
 		title: "SurfSense – Open Source, Privacy-Focused NotebookLM Alternative for Teams",
 		description:
 			"Open source NotebookLM alternative for teams with no data limits. Use ChatGPT, Claude, and any AI model for free.",
-		url: "https://surfsense.com",
+		url: "https://www.surfsense.com",
 		siteName: "SurfSense",
 		type: "website",
 		images: [
@@ -137,7 +137,7 @@ export default function RootLayout({
 				<WebSiteJsonLd />
 				<SoftwareApplicationJsonLd />
 			</head>
-			<body className={cn(roboto.className, "bg-white dark:bg-black antialiased h-full w-full ")}>
+			<body className={cn(roboto.className, "bg-main-panel antialiased h-full w-full ")}>
 				<PostHogProvider>
 					<LocaleProvider>
 						<I18nProvider>

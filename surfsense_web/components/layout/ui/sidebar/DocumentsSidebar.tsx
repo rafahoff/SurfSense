@@ -24,7 +24,7 @@ import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { agentFlagsAtom } from "@/atoms/agent/agent-flags-query.atom";
-import { mentionedDocumentsAtom } from "@/atoms/chat/mentioned-documents.atom";
+import { makeFolderMention, mentionedDocumentsAtom } from "@/atoms/chat/mentioned-documents.atom";
 import { connectorDialogOpenAtom } from "@/atoms/connector-dialog/connector-dialog.atoms";
 import { connectorsAtom } from "@/atoms/connectors/connector-query.atoms";
 import { deleteDocumentMutationAtom } from "@/atoms/documents/document-mutation.atoms";
@@ -35,7 +35,6 @@ import {
 	folderWatchDialogOpenAtom,
 	folderWatchInitialFolderAtom,
 } from "@/atoms/folder-sync/folder-sync.atoms";
-import { rightPanelCollapsedAtom } from "@/atoms/layout/right-panel.atom";
 import { searchSpacesAtom } from "@/atoms/search-spaces/search-space-query.atoms";
 import { CreateFolderDialog } from "@/components/documents/CreateFolderDialog";
 import type { DocumentNodeDoc } from "@/components/documents/DocumentNode";
@@ -83,13 +82,50 @@ import { uploadFolderScan } from "@/lib/folder-sync-upload";
 import { getSupportedExtensionsSet } from "@/lib/supported-extensions";
 import { queries } from "@/zero/queries/index";
 import { SidebarSlideOutPanel } from "./SidebarSlideOutPanel";
+import { BACKEND_URL } from "@/lib/env-config";
 
 const DesktopLocalTabContent = dynamic(
 	() => import("./DesktopLocalTabContent").then((mod) => mod.DesktopLocalTabContent),
 	{ ssr: false }
 );
 
-const NON_DELETABLE_DOCUMENT_TYPES: readonly string[] = ["SURFSENSE_DOCS"];
+const NON_DELETABLE_DOCUMENT_TYPES: readonly string[] = [
+	"SURFSENSE_DOCS",
+	"USER_MEMORY",
+	"TEAM_MEMORY",
+];
+const MEMORY_DOCUMENTS: DocumentNodeDoc[] = [
+	{
+		id: -1001,
+		title: "MEMORY.md",
+		document_type: "USER_MEMORY",
+		folderId: null,
+		status: { state: "ready" },
+	},
+	{
+		id: -1002,
+		title: "TEAM_MEMORY.md",
+		document_type: "TEAM_MEMORY",
+		folderId: null,
+		status: { state: "ready" },
+	},
+];
+
+function isMemoryDocument(doc: { document_type: string }) {
+	return doc.document_type === "USER_MEMORY" || doc.document_type === "TEAM_MEMORY";
+}
+
+function downloadTextFile(content: string, fileName: string, type = "text/markdown;charset=utf-8") {
+	const blob = new Blob([content], { type });
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = fileName;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	URL.revokeObjectURL(url);
+}
 const LOCAL_FILESYSTEM_TRUST_KEY = "surfsense.local-filesystem-trust.v1";
 const MAX_LOCAL_FILESYSTEM_ROOTS = 10;
 
@@ -196,7 +232,6 @@ function AuthenticatedDocumentsSidebarBase({
 	const electronAPI = desktopFeaturesEnabled ? platformElectronAPI : null;
 	const searchSpaceId = Number(params.search_space_id);
 	const setConnectorDialogOpen = useSetAtom(connectorDialogOpenAtom);
-	const setRightPanelCollapsed = useSetAtom(rightPanelCollapsedAtom);
 	const openEditorPanel = useSetAtom(openEditorPanelAtom);
 	const { data: agentFlags } = useAtomValue(agentFlagsAtom);
 	const { data: connectors } = useAtomValue(connectorsAtom);
@@ -735,7 +770,7 @@ function AuthenticatedDocumentsSidebarBase({
 					.trim()
 					.slice(0, 80) || "folder";
 			await doExport(
-				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/search-spaces/${searchSpaceId}/export?folder_id=${ctx.folder.id}`,
+				`${BACKEND_URL}/api/v1/search-spaces/${searchSpaceId}/export?folder_id=${ctx.folder.id}`,
 				`${safeName}.zip`
 			);
 			toast.success(`Folder "${ctx.folder.name}" exported`);
@@ -787,7 +822,7 @@ function AuthenticatedDocumentsSidebarBase({
 						.trim()
 						.slice(0, 80) || "folder";
 				await doExport(
-					`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/search-spaces/${searchSpaceId}/export?folder_id=${folder.id}`,
+					`${BACKEND_URL}/api/v1/search-spaces/${searchSpaceId}/export?folder_id=${folder.id}`,
 					`${safeName}.zip`
 				);
 				toast.success(`Folder "${folder.name}" exported`);
@@ -803,6 +838,30 @@ function AuthenticatedDocumentsSidebarBase({
 
 	const handleExportDocument = useCallback(
 		async (doc: DocumentNodeDoc, format: string) => {
+			if (isMemoryDocument(doc)) {
+				try {
+					const endpoint =
+						doc.document_type === "USER_MEMORY"
+							? `${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/users/me/memory`
+							: `${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/searchspaces/${searchSpaceId}/memory`;
+					const response = await authenticatedFetch(endpoint, { method: "GET" });
+					if (!response.ok) {
+						const errorData = await response.json().catch(() => ({ detail: "Export failed" }));
+						throw new Error(errorData.detail || "Export failed");
+					}
+					const data = (await response.json()) as { memory_md?: string };
+					downloadTextFile(
+						data.memory_md ?? "",
+						doc.title.endsWith(".md") ? doc.title : `${doc.title}.md`
+					);
+					return;
+				} catch (err) {
+					console.error("Memory export failed:", err);
+					toast.error(err instanceof Error ? err.message : "Export failed");
+					return;
+				}
+			}
+
 			const safeTitle =
 				doc.title
 					.replace(/[^a-zA-Z0-9 _-]/g, "_")
@@ -812,7 +871,7 @@ function AuthenticatedDocumentsSidebarBase({
 
 			try {
 				const response = await authenticatedFetch(
-					`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/search-spaces/${searchSpaceId}/documents/${doc.id}/export?format=${format}`,
+					`${BACKEND_URL}/api/v1/search-spaces/${searchSpaceId}/documents/${doc.id}/export?format=${format}`,
 					{ method: "GET" }
 				);
 
@@ -898,7 +957,8 @@ function AuthenticatedDocumentsSidebarBase({
 
 	const handleToggleChatMention = useCallback(
 		(doc: { id: number; title: string; document_type: string }, isMentioned: boolean) => {
-			const key = getMentionDocKey(doc);
+			if (isMemoryDocument(doc)) return;
+			const key = getMentionDocKey({ ...doc, kind: "doc" });
 			if (isMentioned) {
 				setSidebarDocs((prev) => prev.filter((d) => getMentionDocKey(d) !== key));
 			} else {
@@ -906,7 +966,12 @@ function AuthenticatedDocumentsSidebarBase({
 					if (prev.some((d) => getMentionDocKey(d) === key)) return prev;
 					return [
 						...prev,
-						{ id: doc.id, title: doc.title, document_type: doc.document_type as DocumentTypeEnum },
+						{
+							id: doc.id,
+							title: doc.title,
+							document_type: doc.document_type as DocumentTypeEnum,
+							kind: "doc",
+						},
 					];
 				});
 			}
@@ -916,47 +981,91 @@ function AuthenticatedDocumentsSidebarBase({
 
 	const handleToggleFolderSelect = useCallback(
 		(folderId: number, selectAll: boolean) => {
-			function collectSubtreeDocs(parentId: number): DocumentNodeDoc[] {
-				const directDocs = (treeDocuments ?? []).filter(
-					(d) =>
-						d.folderId === parentId &&
-						d.status?.state !== "pending" &&
-						d.status?.state !== "processing" &&
-						d.status?.state !== "failed"
-				);
-				const childFolders = foldersByParent[String(parentId)] ?? [];
-				const descendantDocs = childFolders.flatMap((cf) => collectSubtreeDocs(cf.id));
-				return [...directDocs, ...descendantDocs];
-			}
-
-			const subtreeDocs = collectSubtreeDocs(folderId);
-			if (subtreeDocs.length === 0) return;
+			// One folder click = one folder-mention chip. The agent
+			// resolves the chip to its virtual path
+			// (``/documents/MyFolder/``) and walks it itself with
+			// ``ls`` / ``find_documents``. We deliberately don't
+			// fan out to per-doc chips anymore — the previous
+			// behaviour created N chips for one click and dropped
+			// nested folders entirely once selected, which the
+			// agent had no way to recover.
+			const folder = treeFolders.find((f) => f.id === folderId);
+			if (!folder) return;
+			const chip = makeFolderMention({ id: folder.id, name: folder.name });
+			const chipKey = getMentionDocKey(chip);
 
 			if (selectAll) {
 				setSidebarDocs((prev) => {
-					const existingDocKeys = new Set(prev.map((d) => getMentionDocKey(d)));
-					const newDocs = subtreeDocs
-						.filter((d) => !existingDocKeys.has(getMentionDocKey(d)))
-						.map((d) => ({
-							id: d.id,
-							title: d.title,
-							document_type: d.document_type as DocumentTypeEnum,
-						}));
-					return newDocs.length > 0 ? [...prev, ...newDocs] : prev;
+					const exists = prev.some((d) => getMentionDocKey(d) === chipKey);
+					return exists ? prev : [...prev, chip];
 				});
 			} else {
-				const keysToRemove = new Set(subtreeDocs.map((d) => getMentionDocKey(d)));
-				setSidebarDocs((prev) => prev.filter((d) => !keysToRemove.has(getMentionDocKey(d))));
+				setSidebarDocs((prev) => prev.filter((d) => getMentionDocKey(d) !== chipKey));
 			}
 		},
-		[treeDocuments, foldersByParent, setSidebarDocs]
+		[treeFolders, setSidebarDocs]
+	);
+
+	const treeDocumentsWithMemory = useMemo(
+		() => [...MEMORY_DOCUMENTS, ...treeDocuments],
+		[treeDocuments]
 	);
 
 	const searchFilteredDocuments = useMemo(() => {
 		const query = debouncedSearch.trim().toLowerCase();
-		if (!query) return treeDocuments;
-		return treeDocuments.filter((d) => d.title.toLowerCase().includes(query));
-	}, [treeDocuments, debouncedSearch]);
+		if (!query) return treeDocumentsWithMemory;
+		return treeDocumentsWithMemory.filter((d) => d.title.toLowerCase().includes(query));
+	}, [treeDocumentsWithMemory, debouncedSearch]);
+
+	const openMemoryDocument = useCallback(
+		(doc: DocumentNodeDoc) => {
+			if (doc.document_type === "USER_MEMORY") {
+				openEditorPanel({
+					kind: "memory",
+					memoryScope: "user",
+					searchSpaceId,
+					title: doc.title,
+				});
+				return true;
+			}
+			if (doc.document_type === "TEAM_MEMORY") {
+				openEditorPanel({
+					kind: "memory",
+					memoryScope: "team",
+					searchSpaceId,
+					title: doc.title,
+				});
+				return true;
+			}
+			return false;
+		},
+		[openEditorPanel, searchSpaceId]
+	);
+
+	const handleResetMemoryDocument = useCallback(
+		async (doc: DocumentNodeDoc) => {
+			if (!isMemoryDocument(doc)) return;
+			if (!window.confirm(`Reset ${doc.title.toLowerCase()}? This clears the memory document.`)) {
+				return;
+			}
+			const endpoint =
+				doc.document_type === "USER_MEMORY"
+					? `${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/users/me/memory/reset`
+					: `${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/searchspaces/${searchSpaceId}/memory/reset`;
+			try {
+				const response = await authenticatedFetch(endpoint, { method: "POST" });
+				if (!response.ok) {
+					const errorData = await response.json().catch(() => ({ detail: "Reset failed" }));
+					throw new Error(errorData.detail || "Reset failed");
+				}
+				toast.success(`${doc.title} reset`);
+				openMemoryDocument(doc);
+			} catch (error) {
+				toast.error((error as Error)?.message || `Failed to reset ${doc.title.toLowerCase()}`);
+			}
+		},
+		[openMemoryDocument, searchSpaceId]
+	);
 
 	const typeCounts = useMemo(() => {
 		const counts: Partial<Record<string, number>> = {};
@@ -1044,17 +1153,13 @@ function AuthenticatedDocumentsSidebarBase({
 
 	useEffect(() => {
 		const handleEscape = (e: KeyboardEvent) => {
-			if (e.key === "Escape" && open) {
-				if (isMobile) {
-					onOpenChange(false);
-				} else {
-					setRightPanelCollapsed(true);
-				}
+			if (e.key === "Escape" && open && isMobile) {
+				onOpenChange(false);
 			}
 		};
 		document.addEventListener("keydown", handleEscape);
 		return () => document.removeEventListener("keydown", handleEscape);
-	}, [open, onOpenChange, isMobile, setRightPanelCollapsed]);
+	}, [open, onOpenChange, isMobile]);
 
 	const showFilesystemTabs =
 		!isMobile && !!electronAPI && !!filesystemSettings && localFilesystemEnabled;
@@ -1070,86 +1175,88 @@ function AuthenticatedDocumentsSidebarBase({
 	const cloudContent = (
 		<>
 			{/* Connected tools strip */}
-			<div className="shrink-0 mx-4 mt-4 mb-4 flex select-none items-center gap-2 rounded-lg border bg-muted/50 transition-colors hover:bg-muted/80">
-				<button
-					type="button"
-					onClick={() => setConnectorDialogOpen(true)}
-					className="flex items-center gap-2 min-w-0 flex-1 text-left px-3 py-2"
-				>
-					<Unplug className="size-4 shrink-0 text-muted-foreground" />
-					<span className="truncate text-xs text-muted-foreground">
-						{connectorCount > 0 ? "Manage connectors" : "Connect your connectors"}
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				onClick={() => setConnectorDialogOpen(true)}
+				className="shrink-0 mx-4 mt-6 mb-2.5 h-auto select-none justify-start gap-2 bg-muted px-3 py-1.5 text-xs text-muted-foreground"
+			>
+				<Unplug className="size-4 shrink-0" />
+				<span className="truncate">
+					{connectorCount > 0 ? "Manage connectors" : "Connect your connectors"}
+				</span>
+				{connectorCount > 0 && (
+					<span className="shrink-0 rounded-full bg-muted-foreground/15 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+						{connectorCount}
 					</span>
-					{connectorCount > 0 && (
-						<span className="shrink-0 rounded-full bg-muted-foreground/15 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-							{connectorCount}
-						</span>
-					)}
-					<AvatarGroup className="ml-auto shrink-0">
-						{connectorCount > 0 && connectors
-							? connectors.slice(0, isMobile ? 5 : 9).map((connector, i) => {
+				)}
+				<AvatarGroup className="ml-auto shrink-0">
+					{connectorCount > 0 && connectors
+						? connectors.slice(0, isMobile ? 5 : 9).map((connector, i) => {
+								const avatar = (
+									<Avatar
+										key={connector.id}
+										className="size-6"
+										style={{ zIndex: Math.max(9 - i, 1) }}
+									>
+										<AvatarFallback className="bg-muted text-[10px] text-muted-foreground">
+											{getConnectorIcon(connector.connector_type, "size-3.5")}
+										</AvatarFallback>
+									</Avatar>
+								);
+								if (isMobile) return avatar;
+								return (
+									<Tooltip key={connector.id}>
+										<TooltipTrigger asChild>{avatar}</TooltipTrigger>
+										<TooltipContent side="top" className="text-xs">
+											{connector.name}
+										</TooltipContent>
+									</Tooltip>
+								);
+							})
+						: (isMobile ? SHOWCASE_CONNECTORS.slice(0, 5) : SHOWCASE_CONNECTORS).map(
+								({ type, label }, i) => {
 									const avatar = (
 										<Avatar
-											key={connector.id}
+											key={type}
 											className="size-6"
-											style={{ zIndex: Math.max(9 - i, 1) }}
+											style={{ zIndex: SHOWCASE_CONNECTORS.length - i }}
 										>
-											<AvatarFallback className="bg-muted text-[10px]">
-												{getConnectorIcon(connector.connector_type, "size-3.5")}
+											<AvatarFallback className="bg-muted text-[10px] text-muted-foreground">
+												{getConnectorIcon(type, "size-3.5")}
 											</AvatarFallback>
 										</Avatar>
 									);
 									if (isMobile) return avatar;
 									return (
-										<Tooltip key={connector.id}>
+										<Tooltip key={type}>
 											<TooltipTrigger asChild>{avatar}</TooltipTrigger>
 											<TooltipContent side="top" className="text-xs">
-												{connector.name}
+												{label}
 											</TooltipContent>
 										</Tooltip>
 									);
-								})
-							: (isMobile ? SHOWCASE_CONNECTORS.slice(0, 5) : SHOWCASE_CONNECTORS).map(
-									({ type, label }, i) => {
-										const avatar = (
-											<Avatar
-												key={type}
-												className="size-6"
-												style={{ zIndex: SHOWCASE_CONNECTORS.length - i }}
-											>
-												<AvatarFallback className="bg-muted text-[10px]">
-													{getConnectorIcon(type, "size-3.5")}
-												</AvatarFallback>
-											</Avatar>
-										);
-										if (isMobile) return avatar;
-										return (
-											<Tooltip key={type}>
-												<TooltipTrigger asChild>{avatar}</TooltipTrigger>
-												<TooltipContent side="top" className="text-xs">
-													{label}
-												</TooltipContent>
-											</Tooltip>
-										);
-									}
-								)}
-					</AvatarGroup>
-				</button>
-			</div>
+								}
+							)}
+				</AvatarGroup>
+			</Button>
 
 			{isElectron && (
-				<button
+				<Button
 					type="button"
+					variant="ghost"
+					size="sm"
 					onClick={handleWatchLocalFolder}
-					className="shrink-0 mx-4 mb-4 flex select-none items-center gap-2 rounded-lg border bg-muted/50 px-3 py-2 transition-colors hover:bg-muted/80"
+					className="shrink-0 mx-4 mb-2.5 h-auto select-none justify-start gap-2 bg-muted px-3 py-1.5 text-xs text-muted-foreground"
 				>
-					<FolderClock className="size-4 shrink-0 text-muted-foreground" />
-					<span className="truncate text-xs text-muted-foreground">Watch local folder</span>
-				</button>
+					<FolderClock className="size-4 shrink-0" />
+					<span className="truncate">Watch local folder</span>
+				</Button>
 			)}
 
 			<div className="flex-1 min-h-0 pt-0 flex flex-col">
-				<div className="px-4 pb-2">
+				<div className="px-4 pb-1.5">
 					<DocumentsFilters
 						typeCounts={typeCounts}
 						onSearch={setSearch}
@@ -1166,15 +1273,17 @@ function AuthenticatedDocumentsSidebarBase({
 				<div className="relative flex-1 min-h-0 overflow-auto">
 					{deletableSelectedIds.length > 0 && (
 						<div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center px-4 py-1.5 animate-in fade-in duration-150 pointer-events-none">
-							<button
+							<Button
 								type="button"
+								variant="destructive"
+								size="sm"
 								onClick={() => setBulkDeleteConfirmOpen(true)}
-								className="pointer-events-auto flex items-center gap-1.5 px-3 py-1 rounded-md bg-destructive text-destructive-foreground shadow-lg text-xs font-medium hover:bg-destructive/90 transition-colors"
+								className="pointer-events-auto h-auto gap-1.5 px-3 py-1 text-xs shadow-lg"
 							>
 								<Trash2 size={12} />
 								Delete {deletableSelectedIds.length}{" "}
 								{deletableSelectedIds.length === 1 ? "item" : "items"}
-							</button>
+							</Button>
 						</div>
 					)}
 
@@ -1195,6 +1304,7 @@ function AuthenticatedDocumentsSidebarBase({
 							onCreateFolder={handleCreateFolder}
 							searchQuery={debouncedSearch.trim() || undefined}
 							onPreviewDocument={(doc) => {
+								if (openMemoryDocument(doc)) return;
 								openEditorPanel({
 									documentId: doc.id,
 									searchSpaceId,
@@ -1202,6 +1312,7 @@ function AuthenticatedDocumentsSidebarBase({
 								});
 							}}
 							onEditDocument={(doc) => {
+								if (openMemoryDocument(doc)) return;
 								openEditorPanel({
 									documentId: doc.id,
 									searchSpaceId,
@@ -1210,6 +1321,7 @@ function AuthenticatedDocumentsSidebarBase({
 							}}
 							onDeleteDocument={(doc) => handleDeleteDocument(doc.id)}
 							onMoveDocument={handleMoveDocument}
+							onResetDocument={handleResetMemoryDocument}
 							onExportDocument={handleExportDocument}
 							onVersionHistory={(doc) => setVersionDocId(doc.id)}
 							activeTypes={activeTypes}
@@ -1249,17 +1361,17 @@ function AuthenticatedDocumentsSidebarBase({
 
 	const documentsContent = (
 		<>
-			<div className="shrink-0 flex h-14 items-center px-4">
+			<div className="shrink-0 flex h-12 items-center px-3 border-b">
 				<div className="flex w-full items-center justify-between">
 					<div className="flex items-center gap-3">
 						{isMobile && (
 							<Button
 								variant="ghost"
 								size="icon"
-								className="h-8 w-8 rounded-full"
+								className="h-8 w-8 rounded-full text-muted-foreground hover:text-accent-foreground"
 								onClick={() => onOpenChange(false)}
 							>
-								<ChevronLeft className="h-4 w-4 text-muted-foreground" />
+								<ChevronLeft className="h-4 w-4" />
 								<span className="sr-only">{tSidebar("close") || "Close"}</span>
 							</Button>
 						)}
@@ -1299,7 +1411,7 @@ function AuthenticatedDocumentsSidebarBase({
 									<Button
 										variant="ghost"
 										size="icon"
-										className="h-8 w-8 rounded-full"
+										className="h-8 w-8 rounded-full text-muted-foreground hover:text-accent-foreground"
 										onClick={() => {
 											if (isDocked) {
 												onDockedChange(false);
@@ -1310,9 +1422,9 @@ function AuthenticatedDocumentsSidebarBase({
 										}}
 									>
 										{isDocked ? (
-											<ChevronLeft className="h-4 w-4 text-muted-foreground" />
+											<ChevronLeft className="h-4 w-4" />
 										) : (
-											<ChevronRight className="h-4 w-4 text-muted-foreground" />
+											<ChevronRight className="h-4 w-4" />
 										)}
 										<span className="sr-only">{isDocked ? "Collapse panel" : "Expand panel"}</span>
 									</Button>
@@ -1606,7 +1718,6 @@ function AnonymousDocumentsSidebar({
 	const t = useTranslations("documents");
 	const tSidebar = useTranslations("sidebar");
 	const isMobile = !useMediaQuery("(min-width: 640px)");
-	const setRightPanelCollapsed = useSetAtom(rightPanelCollapsedAtom);
 	const anonMode = useAnonymousMode();
 	const { gate } = useLoginGate();
 
@@ -1622,7 +1733,7 @@ function AnonymousDocumentsSidebar({
 
 	const handleToggleChatMention = useCallback(
 		(doc: { id: number; title: string; document_type: string }, isMentioned: boolean) => {
-			const key = getMentionDocKey(doc);
+			const key = getMentionDocKey({ ...doc, kind: "doc" });
 			if (isMentioned) {
 				setSidebarDocs((prev) => prev.filter((d) => getMentionDocKey(d) !== key));
 			} else {
@@ -1630,7 +1741,12 @@ function AnonymousDocumentsSidebar({
 					if (prev.some((d) => getMentionDocKey(d) === key)) return prev;
 					return [
 						...prev,
-						{ id: doc.id, title: doc.title, document_type: doc.document_type as DocumentTypeEnum },
+						{
+							id: doc.id,
+							title: doc.title,
+							document_type: doc.document_type as DocumentTypeEnum,
+							kind: "doc",
+						},
 					];
 				});
 			}
@@ -1713,17 +1829,13 @@ function AnonymousDocumentsSidebar({
 
 	useEffect(() => {
 		const handleEscape = (e: KeyboardEvent) => {
-			if (e.key === "Escape" && open) {
-				if (isMobile) {
-					onOpenChange(false);
-				} else {
-					setRightPanelCollapsed(true);
-				}
+			if (e.key === "Escape" && open && isMobile) {
+				onOpenChange(false);
 			}
 		};
 		document.addEventListener("keydown", handleEscape);
 		return () => document.removeEventListener("keydown", handleEscape);
-	}, [open, onOpenChange, isMobile, setRightPanelCollapsed]);
+	}, [open, onOpenChange, isMobile]);
 
 	const documentsContent = (
 		<>
@@ -1737,20 +1849,20 @@ function AnonymousDocumentsSidebar({
 			/>
 
 			{/* Header */}
-			<div className="shrink-0 flex h-14 items-center px-4">
+			<div className="shrink-0 flex h-12 items-center px-3 border-b">
 				<div className="flex w-full items-center justify-between">
 					<div className="flex items-center gap-2">
-						<h2 className="select-none text-lg font-semibold">{t("title") || "Documents"}</h2>
+						<h2 className="select-none text-base font-semibold">{t("title") || "Documents"}</h2>
 					</div>
 					<div className="flex items-center gap-1">
 						{isMobile && (
 							<Button
 								variant="ghost"
 								size="icon"
-								className="h-8 w-8 rounded-full"
+								className="h-8 w-8 rounded-full text-muted-foreground hover:text-accent-foreground"
 								onClick={() => onOpenChange(false)}
 							>
-								<X className="h-4 w-4 text-muted-foreground" />
+								<X className="h-4 w-4" />
 								<span className="sr-only">{tSidebar("close") || "Close"}</span>
 							</Button>
 						)}
@@ -1760,7 +1872,7 @@ function AnonymousDocumentsSidebar({
 									<Button
 										variant="ghost"
 										size="icon"
-										className="h-8 w-8 rounded-full"
+										className="h-8 w-8 rounded-full text-muted-foreground hover:text-accent-foreground"
 										onClick={() => {
 											if (isDocked) {
 												onDockedChange(false);
@@ -1771,9 +1883,9 @@ function AnonymousDocumentsSidebar({
 										}}
 									>
 										{isDocked ? (
-											<ChevronLeft className="h-4 w-4 text-muted-foreground" />
+											<ChevronLeft className="h-4 w-4" />
 										) : (
-											<ChevronRight className="h-4 w-4 text-muted-foreground" />
+											<ChevronRight className="h-4 w-4" />
 										)}
 										<span className="sr-only">{isDocked ? "Collapse panel" : "Expand panel"}</span>
 									</Button>
@@ -1789,46 +1901,46 @@ function AnonymousDocumentsSidebar({
 			</div>
 
 			{/* Connectors strip (gated) */}
-			<div className="shrink-0 mx-4 mt-4 mb-4 flex select-none items-center gap-2 rounded-lg border bg-muted/50 transition-colors hover:bg-muted/80">
-				<button
-					type="button"
-					onClick={() => gate("connect your data sources")}
-					className="flex items-center gap-2 min-w-0 flex-1 text-left px-3 py-2"
-				>
-					<Unplug className="size-4 shrink-0 text-muted-foreground" />
-					<span className="truncate text-xs text-muted-foreground">Connect your connectors</span>
-					<AvatarGroup className="ml-auto shrink-0">
-						{(isMobile ? SHOWCASE_CONNECTORS.slice(0, 5) : SHOWCASE_CONNECTORS).map(
-							({ type, label }, i) => {
-								const avatar = (
-									<Avatar
-										key={type}
-										className="size-6"
-										style={{ zIndex: SHOWCASE_CONNECTORS.length - i }}
-									>
-										<AvatarFallback className="bg-muted text-[10px]">
-											{getConnectorIcon(type, "size-3.5")}
-										</AvatarFallback>
-									</Avatar>
-								);
-								if (isMobile) return avatar;
-								return (
-									<Tooltip key={type}>
-										<TooltipTrigger asChild>{avatar}</TooltipTrigger>
-										<TooltipContent side="top" className="text-xs">
-											{label}
-										</TooltipContent>
-									</Tooltip>
-								);
-							}
-						)}
-					</AvatarGroup>
-				</button>
-			</div>
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				onClick={() => gate("connect your data sources")}
+				className="shrink-0 mx-4 mt-6 mb-2.5 h-auto select-none justify-start gap-2 border bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground"
+			>
+				<Unplug className="size-4 shrink-0" />
+				<span className="truncate">Connect your connectors</span>
+				<AvatarGroup className="ml-auto shrink-0">
+					{(isMobile ? SHOWCASE_CONNECTORS.slice(0, 5) : SHOWCASE_CONNECTORS).map(
+						({ type, label }, i) => {
+							const avatar = (
+								<Avatar
+									key={type}
+									className="size-6"
+									style={{ zIndex: SHOWCASE_CONNECTORS.length - i }}
+								>
+									<AvatarFallback className="bg-muted text-[10px] text-muted-foreground">
+										{getConnectorIcon(type, "size-3.5")}
+									</AvatarFallback>
+								</Avatar>
+							);
+							if (isMobile) return avatar;
+							return (
+								<Tooltip key={type}>
+									<TooltipTrigger asChild>{avatar}</TooltipTrigger>
+									<TooltipContent side="top" className="text-xs">
+										{label}
+									</TooltipContent>
+								</Tooltip>
+							);
+						}
+					)}
+				</AvatarGroup>
+			</Button>
 
 			{/* Filters & upload */}
 			<div className="flex-1 min-h-0 pt-0 flex flex-col">
-				<div className="px-4 pb-2">
+				<div className="px-4 pb-1.5">
 					<DocumentsFilters
 						typeCounts={hasDoc ? { FILE: 1 } : {}}
 						onSearch={setSearch}
@@ -1876,18 +1988,19 @@ function AnonymousDocumentsSidebar({
 
 					{!hasDoc && (
 						<div className="px-4 py-8 text-center">
-							<button
+							<Button
 								type="button"
+								variant="ghost"
 								onClick={handleAnonUploadClick}
 								disabled={isUploading}
-								className="relative flex w-full items-center justify-center rounded-lg border-2 border-dashed border-primary/30 px-4 py-6 text-sm text-primary transition-colors hover:border-primary/60 hover:bg-primary/5 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
+								className="relative h-auto w-full border-2 border-dashed border-primary/30 px-4 py-6 text-sm text-primary hover:border-primary/60 hover:bg-primary/5 hover:text-primary cursor-pointer"
 							>
 								<span className={`flex items-center gap-2 ${isUploading ? "opacity-0" : ""}`}>
 									<Upload className="size-4" />
 									Upload a document
 								</span>
 								{isUploading && <Spinner size="sm" className="absolute" />}
-							</button>
+							</Button>
 							<p className="mt-2 text-[11px] text-muted-foreground leading-relaxed">
 								Text, code, CSV, and HTML files only. Create an account for PDFs, images, and 30+
 								connectors.

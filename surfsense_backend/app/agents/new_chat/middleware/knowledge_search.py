@@ -54,6 +54,7 @@ from app.db import (
     NATIVE_TO_LEGACY_DOCTYPE,
     Chunk,
     Document,
+    Folder,
     shielded_async_session,
 )
 from app.retriever.chunks_hybrid_search import ChucksHybridSearchRetriever
@@ -456,7 +457,7 @@ async def search_knowledge_base(
     if not query:
         return []
 
-    [embedding] = embed_texts([query])
+    [embedding] = await asyncio.to_thread(embed_texts, [query])
     doc_types = _resolve_search_types(available_connectors, available_document_types)
     retriever_top_k = min(top_k * 3, 30)
 
@@ -578,24 +579,36 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         self,
         *,
         llm: BaseChatModel | None = None,
+        planner_llm: BaseChatModel | None = None,
         search_space_id: int,
         filesystem_mode: FilesystemMode = FilesystemMode.CLOUD,
         available_connectors: list[str] | None = None,
         available_document_types: list[str] | None = None,
         top_k: int = 10,
         mentioned_document_ids: list[int] | None = None,
+        inject_system_message: bool = True,  # For backwards compatibility
     ) -> None:
         self.llm = llm
+        # The planner LLM handles short, structured internal tasks (query
+        # rewriting, date extraction, recency classification). When an
+        # operator marks a global config ``is_planner: true`` we route
+        # those calls to a cheap/fast model (e.g. gpt-4o-mini, Haiku, Azure
+        # gpt-5.x-nano) instead of the user's chat LLM — those classification
+        # tasks don't need frontier-tier capability. Falls back to the chat
+        # LLM when no planner config is wired up so deployments without one
+        # keep working unchanged.
+        self.planner_llm = planner_llm or llm
         self.search_space_id = search_space_id
         self.filesystem_mode = filesystem_mode
         self.available_connectors = available_connectors
         self.available_document_types = available_document_types
         self.top_k = top_k
         self.mentioned_document_ids = mentioned_document_ids or []
+        self.inject_system_message = inject_system_message
         # Build the kb-planner private Runnable ONCE here so we don't pay
         # the ``create_agent`` compile cost (50-200ms) on every turn.
         # Disabled by default behind ``enable_kb_planner_runnable``; when
-        # off the planner falls back to the legacy ``self.llm.ainvoke``
+        # off the planner falls back to the legacy ``planner_llm.ainvoke``
         # path.
         self._planner: Runnable | None = None
         self._planner_compile_failed = False
@@ -605,7 +618,7 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
 
         Returns ``None`` when the feature flag is disabled, when the LLM is
         unavailable, or when ``create_agent`` raises (we fall back to the
-        legacy ``self.llm.ainvoke`` path in that case). Compilation happens
+        legacy ``planner_llm.ainvoke`` path in that case). Compilation happens
         lazily on first call, then memoized via ``self._planner``.
 
         The compiled agent is constructed without tools — the planner's
@@ -615,7 +628,7 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         """
         if self._planner is not None or self._planner_compile_failed:
             return self._planner
-        if self.llm is None:
+        if self.planner_llm is None:
             return None
         flags = get_flags()
         if not flags.enable_kb_planner_runnable or flags.disable_new_agent_stack:
@@ -625,13 +638,13 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
 
         try:
             self._planner = create_agent(
-                self.llm,
+                self.planner_llm,
                 tools=[],
                 middleware=[RetryAfterMiddleware(max_retries=2)],
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
-                "kb-planner Runnable compile failed; falling back to llm.ainvoke: %s",
+                "kb-planner Runnable compile failed; falling back to planner_llm.ainvoke: %s",
                 exc,
             )
             self._planner_compile_failed = True
@@ -644,12 +657,12 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         messages: Sequence[BaseMessage],
         user_text: str,
     ) -> tuple[str, datetime | None, datetime | None, bool]:
-        if self.llm is None:
+        if self.planner_llm is None:
             return user_text, None, None, False
 
         recent_conversation = _render_recent_conversation(
             messages,
-            llm=self.llm,
+            llm=self.planner_llm,
             user_text=user_text,
         )
         prompt = _build_kb_planner_prompt(
@@ -660,8 +673,8 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
         t0 = loop.time()
 
         # Prefer the compiled-once planner Runnable when enabled; otherwise
-        # fall back to ``self.llm.ainvoke``. The ``surfsense:internal`` tag
-        # is preserved on both paths so ``_stream_agent_events`` still
+        # fall back to ``planner_llm.ainvoke``. The ``surfsense:internal``
+        # tag is preserved on both paths so ``_stream_agent_events`` still
         # suppresses the planner's intermediate events from the UI.
         planner = self._build_kb_planner_runnable()
         try:
@@ -681,7 +694,7 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
                     else AIMessage(content="")
                 )
             else:
-                response = await self.llm.ainvoke(
+                response = await self.planner_llm.ainvoke(
                     [HumanMessage(content=prompt)],
                     config={"tags": ["surfsense:internal"]},
                 )
@@ -772,14 +785,16 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
                 "mentioned": True,
             }
         ]
-        new_messages = list(state.get("messages") or [])
-        insert_at = max(len(new_messages) - 1, 0)
-        new_messages.insert(insert_at, _render_priority_message(priority))
-        return {
+        update: dict[str, Any] = {
             "kb_priority": priority,
             "kb_matched_chunk_ids": {},
-            "messages": new_messages,
         }
+        if self.inject_system_message:
+            new_messages = list(state.get("messages") or [])
+            insert_at = max(len(new_messages) - 1, 0)
+            new_messages.insert(insert_at, _render_priority_message(priority))
+            update["messages"] = new_messages
+        return update
 
     async def _authenticated_priority(
         self,
@@ -832,6 +847,22 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
             mention_ids = list(self.mentioned_document_ids)
             self.mentioned_document_ids = []
 
+        # Folder mentions live alongside doc mentions on the runtime
+        # context. They never feed hybrid search (folders aren't
+        # embedded) — they're surfaced purely as ``[USER-MENTIONED]``
+        # priority entries so the agent walks the folder with ``ls`` /
+        # ``find_documents`` instead of ignoring it. Cloud filesystem
+        # mode only.
+        folder_mention_ids: list[int] = []
+        if (
+            ctx is not None
+            and getattr(self, "filesystem_mode", FilesystemMode.CLOUD)
+            == FilesystemMode.CLOUD
+        ):
+            ctx_folders = getattr(ctx, "mentioned_folder_ids", None)
+            if ctx_folders:
+                folder_mention_ids = list(ctx_folders)
+
         mentioned_results: list[dict[str, Any]] = []
         if mention_ids:
             mentioned_results = await fetch_mentioned_documents(
@@ -876,23 +907,81 @@ class KnowledgePriorityMiddleware(AgentMiddleware):  # type: ignore[type-arg]
 
         priority, matched_chunk_ids = await self._materialize_priority(merged)
 
-        new_messages = list(messages)
-        insert_at = max(len(new_messages) - 1, 0)
-        new_messages.insert(insert_at, _render_priority_message(priority))
+        if folder_mention_ids:
+            folder_entries = await self._materialize_folder_priority(folder_mention_ids)
+            priority = folder_entries + priority
 
         _perf_log.info(
-            "[kb_priority] completed in %.3fs query=%r priority=%d mentioned=%d",
+            "[kb_priority] completed in %.3fs query=%r priority=%d mentioned=%d folders=%d",
             asyncio.get_event_loop().time() - t0,
             user_text[:80],
             len(priority),
             len(mentioned_results),
+            len(folder_mention_ids),
         )
 
-        return {
+        update: dict[str, Any] = {
             "kb_priority": priority,
             "kb_matched_chunk_ids": matched_chunk_ids,
-            "messages": new_messages,
         }
+        if self.inject_system_message:
+            new_messages = list(messages)
+            insert_at = max(len(new_messages) - 1, 0)
+            new_messages.insert(insert_at, _render_priority_message(priority))
+            update["messages"] = new_messages
+        return update
+
+    async def _materialize_folder_priority(
+        self, folder_ids: list[int]
+    ) -> list[dict[str, Any]]:
+        """Resolve user-mentioned folder ids to ``<priority_documents>`` entries.
+
+        Each entry uses the canonical ``/documents/Folder/Sub/`` virtual
+        path (matching ``KnowledgeTreeMiddleware`` and the agent's
+        ``ls`` adapter) and is flagged ``mentioned=True`` so the
+        rendered line carries ``[USER-MENTIONED]``. ``score`` is left
+        ``None`` so the renderer prints ``n/a`` — folders aren't
+        ranked, the agent decides which children to read.
+        """
+        if not folder_ids:
+            return []
+        async with shielded_async_session() as session:
+            index: PathIndex = await build_path_index(session, self.search_space_id)
+            folder_rows = await session.execute(
+                select(Folder.id, Folder.name).where(
+                    Folder.search_space_id == self.search_space_id,
+                    Folder.id.in_(folder_ids),
+                )
+            )
+            folder_titles: dict[int, str] = {
+                row.id: row.name for row in folder_rows.all()
+            }
+
+        entries: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for folder_id in folder_ids:
+            if folder_id in seen:
+                continue
+            seen.add(folder_id)
+            base = index.folder_paths.get(folder_id)
+            if base is None:
+                logger.debug(
+                    "kb_priority: dropping folder id=%s (missing from path index)",
+                    folder_id,
+                )
+                continue
+            path = base if base.endswith("/") else f"{base}/"
+            entries.append(
+                {
+                    "path": path,
+                    "score": None,
+                    "document_id": None,
+                    "folder_id": folder_id,
+                    "title": folder_titles.get(folder_id, ""),
+                    "mentioned": True,
+                }
+            )
+        return entries
 
     async def _materialize_priority(
         self, merged: list[dict[str, Any]]

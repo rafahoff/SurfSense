@@ -32,6 +32,7 @@ interface FolderTreeViewProps {
 	onEditDocument: (doc: DocumentNodeDoc) => void;
 	onDeleteDocument: (doc: DocumentNodeDoc) => void;
 	onMoveDocument: (doc: DocumentNodeDoc) => void;
+	onResetDocument?: (doc: DocumentNodeDoc) => void;
 	onExportDocument?: (doc: DocumentNodeDoc, format: string) => void;
 	onVersionHistory?: (doc: DocumentNodeDoc) => void;
 	activeTypes: DocumentTypeEnum[];
@@ -74,6 +75,7 @@ export function FolderTreeView({
 	onEditDocument,
 	onDeleteDocument,
 	onMoveDocument,
+	onResetDocument,
 	onExportDocument,
 	onVersionHistory,
 	activeTypes,
@@ -176,34 +178,25 @@ export function FolderTreeView({
 	}, [folders, docsByFolder, foldersByParent, effectiveActiveTypes, searchQuery]);
 
 	const folderSelectionStates = useMemo(() => {
+		// One folder = one chip. The checkbox now reflects whether the
+		// folder itself is mentioned, not whether every nested doc is —
+		// that reverses the old subtree-fanout semantics in
+		// ``DocumentsSidebar.handleToggleFolderSelect``. We keep the
+		// ``"all" | "some" | "none"`` tri-state on the type so the
+		// existing ``FolderNode`` UI (which renders an indeterminate
+		// glyph for ``"some"``) stays compatible, but only ``"all"``
+		// and ``"none"`` are used in practice.
 		const states: Record<number, FolderSelectionState> = {};
-		const isSelectable = (d: DocumentNodeDoc) =>
-			d.status?.state !== "pending" && d.status?.state !== "processing";
-
-		function compute(folderId: number): { selected: number; total: number } {
-			const directDocs = (docsByFolder[folderId] ?? []).filter(isSelectable);
-			let selected = directDocs.filter((d) => mentionedDocKeys.has(getMentionDocKey(d))).length;
-			let total = directDocs.length;
-
-			for (const child of foldersByParent[folderId] ?? []) {
-				const sub = compute(child.id);
-				selected += sub.selected;
-				total += sub.total;
-			}
-
-			if (total === 0) states[folderId] = "none";
-			else if (selected === total) states[folderId] = "all";
-			else if (selected > 0) states[folderId] = "some";
-			else states[folderId] = "none";
-
-			return { selected, total };
-		}
-
 		for (const f of folders) {
-			if (states[f.id] === undefined) compute(f.id);
+			const folderMentionKey = getMentionDocKey({
+				id: f.id,
+				document_type: "FOLDER",
+				kind: "folder",
+			});
+			states[f.id] = mentionedDocKeys.has(folderMentionKey) ? "all" : "none";
 		}
 		return states;
-	}, [folders, docsByFolder, foldersByParent, mentionedDocKeys]);
+	}, [folders, mentionedDocKeys]);
 
 	const folderMap = useMemo(() => {
 		const map: Record<number, FolderDisplay> = {};
@@ -245,6 +238,47 @@ export function FolderTreeView({
 		return states;
 	}, [folders, docsByFolder, foldersByParent, folderMap]);
 
+	const renderDocumentNode = useCallback(
+		(d: DocumentNodeDoc, depth: number) => {
+			const isMemoryDocument =
+				d.document_type === "USER_MEMORY" || d.document_type === "TEAM_MEMORY";
+			return (
+				<DocumentNode
+					key={`doc-${d.id}`}
+					doc={d}
+					depth={depth}
+					isMentioned={!isMemoryDocument && mentionedDocKeys.has(getMentionDocKey(d))}
+					onToggleChatMention={onToggleChatMention}
+					onPreview={onPreviewDocument}
+					onEdit={onEditDocument}
+					onDelete={onDeleteDocument}
+					onMove={onMoveDocument}
+					onReset={onResetDocument}
+					onExport={onExportDocument}
+					onVersionHistory={isMemoryDocument ? undefined : onVersionHistory}
+					canDelete={!isMemoryDocument}
+					canMove={!isMemoryDocument}
+					canMention={!isMemoryDocument}
+					canEdit
+					contextMenuOpen={openContextMenuId === `doc-${d.id}`}
+					onContextMenuOpenChange={(open) => setOpenContextMenuId(open ? `doc-${d.id}` : null)}
+				/>
+			);
+		},
+		[
+			mentionedDocKeys,
+			onDeleteDocument,
+			onEditDocument,
+			onExportDocument,
+			onMoveDocument,
+			onPreviewDocument,
+			onResetDocument,
+			onToggleChatMention,
+			onVersionHistory,
+			openContextMenuId,
+		]
+	);
+
 	function renderLevel(parentId: number | null, depth: number): React.ReactNode[] {
 		const key = parentId ?? "root";
 		const childFolders = (foldersByParent[key] ?? []).slice().sort((a, b) => {
@@ -272,23 +306,7 @@ export function FolderTreeView({
 				return state === "pending" || state === "processing";
 			});
 			for (const d of processingDocs) {
-				nodes.push(
-					<DocumentNode
-						key={`doc-${d.id}`}
-						doc={d}
-						depth={depth}
-						isMentioned={mentionedDocKeys.has(getMentionDocKey(d))}
-						onToggleChatMention={onToggleChatMention}
-						onPreview={onPreviewDocument}
-						onEdit={onEditDocument}
-						onDelete={onDeleteDocument}
-						onMove={onMoveDocument}
-						onExport={onExportDocument}
-						onVersionHistory={onVersionHistory}
-						contextMenuOpen={openContextMenuId === `doc-${d.id}`}
-						onContextMenuOpenChange={(open) => setOpenContextMenuId(open ? `doc-${d.id}` : null)}
-					/>
-				);
+				nodes.push(renderDocumentNode(d, depth));
 			}
 		}
 
@@ -352,23 +370,7 @@ export function FolderTreeView({
 				: childDocs;
 
 		for (const d of remainingDocs) {
-			nodes.push(
-				<DocumentNode
-					key={`doc-${d.id}`}
-					doc={d}
-					depth={depth}
-					isMentioned={mentionedDocKeys.has(getMentionDocKey(d))}
-					onToggleChatMention={onToggleChatMention}
-					onPreview={onPreviewDocument}
-					onEdit={onEditDocument}
-					onDelete={onDeleteDocument}
-					onMove={onMoveDocument}
-					onExport={onExportDocument}
-					onVersionHistory={onVersionHistory}
-					contextMenuOpen={openContextMenuId === `doc-${d.id}`}
-					onContextMenuOpenChange={(open) => setOpenContextMenuId(open ? `doc-${d.id}` : null)}
-				/>
-			);
+			nodes.push(renderDocumentNode(d, depth));
 		}
 
 		return nodes;

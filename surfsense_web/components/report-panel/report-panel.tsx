@@ -22,6 +22,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { baseApiService } from "@/lib/apis/base-api.service";
 import { authenticatedFetch } from "@/lib/auth-utils";
+import { BACKEND_URL } from "@/lib/env-config";
 
 function ReportPanelSkeleton() {
 	return (
@@ -244,7 +245,7 @@ export function ReportPanelContent({
 					URL.revokeObjectURL(url);
 				} else {
 					const response = await authenticatedFetch(
-						`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/reports/${activeReportId}/export?format=${format}`,
+						`${BACKEND_URL}/api/v1/reports/${activeReportId}/export?format=${format}`,
 						{ method: "GET" }
 					);
 
@@ -277,7 +278,7 @@ export function ReportPanelContent({
 		setSaving(true);
 		try {
 			const response = await authenticatedFetch(
-				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/reports/${activeReportId}/content`,
+				`${BACKEND_URL}/api/v1/reports/${activeReportId}/content`,
 				{
 					method: "PUT",
 					headers: { "Content-Type": "application/json" },
@@ -317,46 +318,44 @@ export function ReportPanelContent({
 		setIsEditing(false);
 	}, []);
 
-	const exportButton = !isEditing && (
-		<>
-			{isResume ? (
-				<Button
-					variant="ghost"
-					size="icon"
-					className="size-6"
-					onClick={() => handleExport("pdf")}
-					disabled={isLoading || !reportContent?.content || exporting !== null}
-				>
-					{exporting === "pdf" ? <Spinner size="xs" /> : <Download className="size-3.5" />}
-					<span className="sr-only">Download report</span>
-				</Button>
-			) : (
-				<DropdownMenu modal={insideDrawer ? false : undefined}>
-					<DropdownMenuTrigger asChild>
-						<Button
-							variant="ghost"
-							size="icon"
-							className="size-6"
-							disabled={isLoading || !reportContent?.content}
-						>
-							<Download className="size-3.5" />
-							<span className="sr-only">Export report</span>
-						</Button>
-					</DropdownMenuTrigger>
-					<DropdownMenuContent
-						align="end"
-						className={`min-w-[200px] select-none${insideDrawer ? " z-[100]" : ""}`}
+	const exportButton =
+		!isEditing &&
+		(isResume ? (
+			<Button
+				variant="ghost"
+				size="icon"
+				className="size-6"
+				onClick={() => handleExport("pdf")}
+				disabled={isLoading || !reportContent?.content || exporting !== null}
+			>
+				{exporting === "pdf" ? <Spinner size="xs" /> : <Download className="size-3.5" />}
+				<span className="sr-only">Download report</span>
+			</Button>
+		) : (
+			<DropdownMenu modal={insideDrawer ? false : undefined}>
+				<DropdownMenuTrigger asChild>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="size-6"
+						disabled={isLoading || !reportContent?.content}
 					>
-						<ExportDropdownItems
-							onExport={handleExport}
-							exporting={exporting}
-							showAllFormats={!shareToken}
-						/>
-					</DropdownMenuContent>
-				</DropdownMenu>
-			)}
-		</>
-	);
+						<Download className="size-3.5" />
+						<span className="sr-only">Export report</span>
+					</Button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent
+					align="end"
+					className={`min-w-[200px] select-none${insideDrawer ? " z-[100]" : ""}`}
+				>
+					<ExportDropdownItems
+						onExport={handleExport}
+						exporting={exporting}
+						showAllFormats={!shareToken}
+					/>
+				</DropdownMenuContent>
+			</DropdownMenu>
+		));
 
 	const versionSwitcher = !isEditing && versions.length > 1 && (
 		<DropdownMenu modal={insideDrawer ? false : undefined}>
@@ -446,21 +445,24 @@ export function ReportPanelContent({
 		<>
 			{showDesktopHeader ? (
 				<>
-					{/* Header — matches the editor panel "File" header pattern */}
-					<div className="flex h-14 items-center justify-between px-4 shrink-0">
-						<h2 className="text-lg font-medium text-muted-foreground select-none">
-							{isResume ? "Resume" : "Report"}
-						</h2>
+					{/* Header — matches the Documents panel header pattern */}
+					<div className="shrink-0 flex h-12 items-center justify-between px-3 border-b">
+						<h2 className="select-none text-lg font-semibold">{isResume ? "Resume" : "Report"}</h2>
 						{onClose && (
-							<Button variant="ghost" size="icon" onClick={onClose} className="size-7 shrink-0">
-								<XIcon className="size-4" />
+							<Button
+								variant="ghost"
+								size="icon"
+								onClick={onClose}
+								className="h-8 w-8 rounded-full shrink-0 text-muted-foreground hover:text-accent-foreground"
+							>
+								<XIcon className="h-4 w-4" />
 								<span className="sr-only">Close report panel</span>
 							</Button>
 						)}
 					</div>
 
 					{!isResume && (
-						<div className="flex h-10 items-center justify-between gap-2 border-t border-b px-4 shrink-0">
+						<div className="flex h-10 items-center justify-between gap-2 border-b px-4 shrink-0">
 							<div className="min-w-0 flex-1">
 								<p className="truncate text-sm text-muted-foreground">
 									{reportContent?.title || title}
@@ -504,7 +506,7 @@ export function ReportPanelContent({
 					</div>
 				) : reportContent.content_type === "typst" ? (
 					<PdfViewer
-						pdfUrl={`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}${shareToken ? `/api/v1/public/${shareToken}/reports/${activeReportId}/preview` : `/api/v1/reports/${activeReportId}/preview`}`}
+						pdfUrl={`${BACKEND_URL}${shareToken ? `/api/v1/public/${shareToken}/reports/${activeReportId}/preview` : `/api/v1/reports/${activeReportId}/preview`}`}
 						isPublic={isPublic}
 						toolbarActions={
 							<>
@@ -528,7 +530,7 @@ export function ReportPanelContent({
 							placeholder="Report content..."
 							editorVariant="default"
 							allowModeToggle={false}
-							reserveToolbarSpace
+							reserveToolbarSpace={isEditing}
 							defaultEditing={isEditing}
 							className="[&_[role=toolbar]]:!bg-sidebar"
 							// Show citation badges in view mode; raw `[citation:N]`

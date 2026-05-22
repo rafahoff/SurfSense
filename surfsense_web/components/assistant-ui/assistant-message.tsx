@@ -4,6 +4,7 @@ import {
 	AuiIf,
 	ErrorPrimitive,
 	MessagePrimitive,
+	type ToolCallMessagePartComponent,
 	useAui,
 	useAuiState,
 } from "@assistant-ui/react";
@@ -13,6 +14,7 @@ import {
 	ClipboardPaste,
 	CopyIcon,
 	DownloadIcon,
+	Dot,
 	ExternalLink,
 	Globe,
 	MessageCircleReply,
@@ -36,11 +38,9 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ReasoningMessagePart } from "@/components/assistant-ui/reasoning-message-part";
 import { RevertTurnButton } from "@/components/assistant-ui/revert-turn-button";
 import { useTokenUsage } from "@/components/assistant-ui/token-usage-context";
-import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { CommentPanelContainer } from "@/components/chat-comments/comment-panel-container/comment-panel-container";
 import { CommentSheet } from "@/components/chat-comments/comment-sheet/comment-sheet";
-import { withBundleStep } from "@/components/hitl-bundle-pager";
 import type { SerializableCitation } from "@/components/tool-ui/citation";
 import {
 	openSafeNavigationHref,
@@ -59,6 +59,7 @@ import { useComments } from "@/hooks/use-comments";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useElectronAPI } from "@/hooks/use-platform";
 import { getProviderIcon } from "@/lib/provider-icons";
+import { tryGetHostname } from "@/lib/url";
 import { cn } from "@/lib/utils";
 
 // Captured once at module load — survives client-side navigations that strip the query param.
@@ -100,160 +101,12 @@ const GenerateImageToolUI = dynamic(
 		import("@/components/tool-ui/generate-image").then((m) => ({ default: m.GenerateImageToolUI })),
 	{ ssr: false }
 );
-const UpdateMemoryToolUI = dynamic(
-	() => import("@/components/tool-ui/user-memory").then((m) => ({ default: m.UpdateMemoryToolUI })),
-	{ ssr: false }
-);
-const SandboxExecuteToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/sandbox-execute").then((m) => ({
-			default: m.SandboxExecuteToolUI,
-		})),
-	{ ssr: false }
-);
-const CreateNotionPageToolUI = dynamic(
-	() => import("@/components/tool-ui/notion").then((m) => ({ default: m.CreateNotionPageToolUI })),
-	{ ssr: false }
-);
-const UpdateNotionPageToolUI = dynamic(
-	() => import("@/components/tool-ui/notion").then((m) => ({ default: m.UpdateNotionPageToolUI })),
-	{ ssr: false }
-);
-const DeleteNotionPageToolUI = dynamic(
-	() => import("@/components/tool-ui/notion").then((m) => ({ default: m.DeleteNotionPageToolUI })),
-	{ ssr: false }
-);
-const CreateLinearIssueToolUI = dynamic(
-	() => import("@/components/tool-ui/linear").then((m) => ({ default: m.CreateLinearIssueToolUI })),
-	{ ssr: false }
-);
-const UpdateLinearIssueToolUI = dynamic(
-	() => import("@/components/tool-ui/linear").then((m) => ({ default: m.UpdateLinearIssueToolUI })),
-	{ ssr: false }
-);
-const DeleteLinearIssueToolUI = dynamic(
-	() => import("@/components/tool-ui/linear").then((m) => ({ default: m.DeleteLinearIssueToolUI })),
-	{ ssr: false }
-);
-const CreateGoogleDriveFileToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/google-drive").then((m) => ({
-			default: m.CreateGoogleDriveFileToolUI,
-		})),
-	{ ssr: false }
-);
-const DeleteGoogleDriveFileToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/google-drive").then((m) => ({
-			default: m.DeleteGoogleDriveFileToolUI,
-		})),
-	{ ssr: false }
-);
-const CreateOneDriveFileToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/onedrive").then((m) => ({ default: m.CreateOneDriveFileToolUI })),
-	{ ssr: false }
-);
-const DeleteOneDriveFileToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/onedrive").then((m) => ({ default: m.DeleteOneDriveFileToolUI })),
-	{ ssr: false }
-);
-const CreateDropboxFileToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/dropbox").then((m) => ({ default: m.CreateDropboxFileToolUI })),
-	{ ssr: false }
-);
-const DeleteDropboxFileToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/dropbox").then((m) => ({ default: m.DeleteDropboxFileToolUI })),
-	{ ssr: false }
-);
-const CreateCalendarEventToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/google-calendar").then((m) => ({
-			default: m.CreateCalendarEventToolUI,
-		})),
-	{ ssr: false }
-);
-const UpdateCalendarEventToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/google-calendar").then((m) => ({
-			default: m.UpdateCalendarEventToolUI,
-		})),
-	{ ssr: false }
-);
-const DeleteCalendarEventToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/google-calendar").then((m) => ({
-			default: m.DeleteCalendarEventToolUI,
-		})),
-	{ ssr: false }
-);
-const CreateGmailDraftToolUI = dynamic(
-	() => import("@/components/tool-ui/gmail").then((m) => ({ default: m.CreateGmailDraftToolUI })),
-	{ ssr: false }
-);
-const UpdateGmailDraftToolUI = dynamic(
-	() => import("@/components/tool-ui/gmail").then((m) => ({ default: m.UpdateGmailDraftToolUI })),
-	{ ssr: false }
-);
-const SendGmailEmailToolUI = dynamic(
-	() => import("@/components/tool-ui/gmail").then((m) => ({ default: m.SendGmailEmailToolUI })),
-	{ ssr: false }
-);
-const TrashGmailEmailToolUI = dynamic(
-	() => import("@/components/tool-ui/gmail").then((m) => ({ default: m.TrashGmailEmailToolUI })),
-	{ ssr: false }
-);
-const CreateJiraIssueToolUI = dynamic(
-	() => import("@/components/tool-ui/jira").then((m) => ({ default: m.CreateJiraIssueToolUI })),
-	{ ssr: false }
-);
-const UpdateJiraIssueToolUI = dynamic(
-	() => import("@/components/tool-ui/jira").then((m) => ({ default: m.UpdateJiraIssueToolUI })),
-	{ ssr: false }
-);
-const DeleteJiraIssueToolUI = dynamic(
-	() => import("@/components/tool-ui/jira").then((m) => ({ default: m.DeleteJiraIssueToolUI })),
-	{ ssr: false }
-);
-const CreateConfluencePageToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/confluence").then((m) => ({
-			default: m.CreateConfluencePageToolUI,
-		})),
-	{ ssr: false }
-);
-const UpdateConfluencePageToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/confluence").then((m) => ({
-			default: m.UpdateConfluencePageToolUI,
-		})),
-	{ ssr: false }
-);
-const DeleteConfluencePageToolUI = dynamic(
-	() =>
-		import("@/components/tool-ui/confluence").then((m) => ({
-			default: m.DeleteConfluencePageToolUI,
-		})),
-	{ ssr: false }
-);
-
-function extractDomain(url: string): string | undefined {
-	try {
-		return new URL(url).hostname.replace(/^www\./, "");
-	} catch {
-		return undefined;
-	}
-}
-
 function useCitationsFromMetadata(): SerializableCitation[] {
 	const allCitations = useAllCitationMetadata();
 	return useMemo(() => {
 		const result: SerializableCitation[] = [];
 		for (const [url, meta] of allCitations) {
-			const domain = extractDomain(url);
+			const domain = tryGetHostname(url);
 			result.push({
 				id: `url-cite-${url}`,
 				href: url,
@@ -285,14 +138,15 @@ const MobileCitationDrawer: FC = () => {
 
 	return (
 		<>
-			<button
+			<Button
 				type="button"
+				variant="ghost"
 				onClick={() => setOpen(true)}
 				className={cn(
-					"isolate inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2",
+					"isolate h-auto cursor-pointer gap-2 rounded-lg px-3 py-2",
 					"bg-muted/40 outline-none",
 					"transition-colors duration-150",
-					"hover:bg-muted/70",
+					"hover:bg-accent hover:text-accent-foreground",
 					"focus-visible:ring-ring focus-visible:ring-2"
 				)}
 			>
@@ -335,7 +189,7 @@ const MobileCitationDrawer: FC = () => {
 				<span className="text-muted-foreground text-sm tabular-nums">
 					{citations.length} source{citations.length !== 1 && "s"}
 				</span>
-			</button>
+			</Button>
 
 			<Drawer open={open} onOpenChange={setOpen}>
 				<DrawerContent className="max-h-[85vh] flex flex-col">
@@ -345,11 +199,12 @@ const MobileCitationDrawer: FC = () => {
 					</DrawerHeader>
 					<div className="overflow-y-auto flex-1 min-h-0 px-1 pb-6">
 						{citations.map((citation) => (
-							<button
+							<Button
 								key={citation.id}
 								type="button"
+								variant="ghost"
 								onClick={() => handleNavigate(citation)}
-								className="group flex w-full items-center gap-2.5 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:outline-none"
+								className="group h-auto w-full justify-start gap-2.5 px-3 py-2.5 text-left hover:bg-accent hover:text-accent-foreground focus-visible:bg-muted"
 							>
 								{citation.favicon ? (
 									// biome-ignore lint/performance/noImgElement: external favicon from arbitrary domain
@@ -371,7 +226,7 @@ const MobileCitationDrawer: FC = () => {
 									<p className="text-muted-foreground truncate text-xs">{citation.domain}</p>
 								</div>
 								<ExternalLink className="text-muted-foreground size-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
-							</button>
+							</Button>
 						))}
 					</div>
 				</DrawerContent>
@@ -413,7 +268,7 @@ function formatTurnCost(micros: number): string {
 	return "$0";
 }
 
-const MessageInfoDropdown: FC = () => {
+const MessageInfoDropdown: FC<{ chatTurnId: string | null | undefined }> = ({ chatTurnId }) => {
 	const messageId = useAuiState(({ message }) => message?.id);
 	const createdAt = useAuiState(({ message }) => message?.createdAt);
 	const usage = useTokenUsage(messageId);
@@ -452,7 +307,7 @@ const MessageInfoDropdown: FC = () => {
 			</ActionBarMorePrimitive.Trigger>
 			<ActionBarMorePrimitive.Content
 				align="start"
-				className="bg-muted text-popover-foreground z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[180px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border dark:border-neutral-700 p-1 shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2"
+				className="bg-popover text-popover-foreground z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[180px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md p-1 shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2"
 			>
 				{createdAt && (
 					<DropdownMenuLabel className="text-xs text-muted-foreground font-normal select-none">
@@ -461,7 +316,7 @@ const MessageInfoDropdown: FC = () => {
 				)}
 				{hasUsage && (
 					<>
-						<ActionBarMorePrimitive.Separator className="bg-border mx-2 my-1 h-px" />
+						<ActionBarMorePrimitive.Separator className="bg-popover-border mx-1 my-1 h-px" />
 						{models.length > 0 ? (
 							models.map(([model, counts]) => {
 								const { name, icon } = resolveModel(model);
@@ -469,84 +324,69 @@ const MessageInfoDropdown: FC = () => {
 								return (
 									<ActionBarMorePrimitive.Item
 										key={model}
-										className="focus:bg-neutral-200 dark:focus:bg-neutral-700 relative flex cursor-default flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none"
+										className="focus:bg-accent focus:text-accent-foreground relative flex cursor-default flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none"
 										onSelect={(e) => e.preventDefault()}
 									>
 										<span className="flex items-center gap-1.5 text-xs font-medium">
 											{icon}
 											{name}
 										</span>
-										<span className="text-xs text-muted-foreground">
-											{counts.total_tokens.toLocaleString()} tokens
-											{costMicros && costMicros > 0 ? ` · ${formatTurnCost(costMicros)}` : ""}
+										<span className="flex items-center text-xs text-muted-foreground">
+											<span>{counts.total_tokens.toLocaleString()} tokens</span>
+											{costMicros && costMicros > 0 ? (
+												<>
+													<Dot className="size-4 shrink-0" aria-hidden="true" />
+													<span>{formatTurnCost(costMicros)}</span>
+												</>
+											) : null}
 										</span>
 									</ActionBarMorePrimitive.Item>
 								);
 							})
 						) : (
 							<ActionBarMorePrimitive.Item
-								className="focus:bg-neutral-200 dark:focus:bg-neutral-700 relative flex cursor-default flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none"
+								className="focus:bg-accent focus:text-accent-foreground relative flex cursor-default flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none"
 								onSelect={(e) => e.preventDefault()}
 							>
-								<span className="text-xs text-muted-foreground">
-									{usage.total_tokens.toLocaleString()} tokens
-									{usage.cost_micros && usage.cost_micros > 0
-										? ` · ${formatTurnCost(usage.cost_micros)}`
-										: ""}
+								<span className="flex items-center text-xs text-muted-foreground">
+									<span>{usage.total_tokens.toLocaleString()} tokens</span>
+									{usage.cost_micros && usage.cost_micros > 0 ? (
+										<>
+											<Dot className="size-4 shrink-0" aria-hidden="true" />
+											<span>{formatTurnCost(usage.cost_micros)}</span>
+										</>
+									) : null}
 								</span>
 							</ActionBarMorePrimitive.Item>
 						)}
 					</>
 				)}
+				<RevertTurnButton chatTurnId={chatTurnId} variant="menu-item" />
 			</ActionBarMorePrimitive.Content>
 		</ActionBarMorePrimitive.Root>
 	);
 };
 
-// Wrap each tool-ui card with ``withBundleStep`` so multi-card HITL bundles
-// page through them and stage decisions instead of firing one resume per card.
-const TOOLS_BY_NAME = {
-	generate_report: withBundleStep(GenerateReportToolUI),
-	generate_resume: withBundleStep(GenerateResumeToolUI),
-	generate_podcast: withBundleStep(GeneratePodcastToolUI),
-	generate_video_presentation: withBundleStep(GenerateVideoPresentationToolUI),
-	display_image: withBundleStep(GenerateImageToolUI),
-	generate_image: withBundleStep(GenerateImageToolUI),
-	update_memory: withBundleStep(UpdateMemoryToolUI),
-	execute: withBundleStep(SandboxExecuteToolUI),
-	execute_code: withBundleStep(SandboxExecuteToolUI),
-	create_notion_page: withBundleStep(CreateNotionPageToolUI),
-	update_notion_page: withBundleStep(UpdateNotionPageToolUI),
-	delete_notion_page: withBundleStep(DeleteNotionPageToolUI),
-	create_linear_issue: withBundleStep(CreateLinearIssueToolUI),
-	update_linear_issue: withBundleStep(UpdateLinearIssueToolUI),
-	delete_linear_issue: withBundleStep(DeleteLinearIssueToolUI),
-	create_google_drive_file: withBundleStep(CreateGoogleDriveFileToolUI),
-	delete_google_drive_file: withBundleStep(DeleteGoogleDriveFileToolUI),
-	create_onedrive_file: withBundleStep(CreateOneDriveFileToolUI),
-	delete_onedrive_file: withBundleStep(DeleteOneDriveFileToolUI),
-	create_dropbox_file: withBundleStep(CreateDropboxFileToolUI),
-	delete_dropbox_file: withBundleStep(DeleteDropboxFileToolUI),
-	create_calendar_event: withBundleStep(CreateCalendarEventToolUI),
-	update_calendar_event: withBundleStep(UpdateCalendarEventToolUI),
-	delete_calendar_event: withBundleStep(DeleteCalendarEventToolUI),
-	create_gmail_draft: withBundleStep(CreateGmailDraftToolUI),
-	update_gmail_draft: withBundleStep(UpdateGmailDraftToolUI),
-	send_gmail_email: withBundleStep(SendGmailEmailToolUI),
-	trash_gmail_email: withBundleStep(TrashGmailEmailToolUI),
-	create_jira_issue: withBundleStep(CreateJiraIssueToolUI),
-	update_jira_issue: withBundleStep(UpdateJiraIssueToolUI),
-	delete_jira_issue: withBundleStep(DeleteJiraIssueToolUI),
-	create_confluence_page: withBundleStep(CreateConfluencePageToolUI),
-	update_confluence_page: withBundleStep(UpdateConfluencePageToolUI),
-	delete_confluence_page: withBundleStep(DeleteConfluencePageToolUI),
-	web_search: () => null,
-	link_preview: () => null,
-	multi_link_preview: () => null,
-	scrape_webpage: () => null,
+/**
+ * Tools rendered in the message BODY — value-add deliverables only.
+ *
+ * Process tools (connector CRUD, sandbox execute, memory updates,
+ * etc.) are NOT here; they render in the timeline via the slice's
+ * tool registry (see ``features/chat-messages/timeline``). The body
+ * opts out of every other tool by registering ``NullBodyTool`` as the
+ * fallback — any tool name not in this map renders nothing in the
+ * body and is picked up by the timeline instead.
+ */
+const BODY_TOOLS = {
+	generate_report: GenerateReportToolUI,
+	generate_resume: GenerateResumeToolUI,
+	generate_podcast: GeneratePodcastToolUI,
+	generate_video_presentation: GenerateVideoPresentationToolUI,
+	display_image: GenerateImageToolUI,
+	generate_image: GenerateImageToolUI,
 } as const;
 
-const TOOLS_FALLBACK = withBundleStep(ToolFallback);
+const NullBodyTool: ToolCallMessagePartComponent = () => null;
 
 const AssistantMessageInner: FC = () => {
 	const isMobile = !useMediaQuery("(min-width: 768px)");
@@ -559,8 +399,8 @@ const AssistantMessageInner: FC = () => {
 						Text: MarkdownText,
 						Reasoning: ReasoningMessagePart,
 						tools: {
-							by_name: TOOLS_BY_NAME,
-							Fallback: TOOLS_FALLBACK,
+							by_name: BODY_TOOLS,
+							Fallback: NullBodyTool,
 						},
 					}}
 				/>
@@ -671,9 +511,10 @@ export const AssistantMessage: FC = () => {
 		>
 			{/* Fixed trigger slot prevents any vertical reflow when visibility changes */}
 			<div className="mr-2 mb-1 flex h-7 justify-end">
-				<button
+				<Button
 					ref={isDesktop ? commentTriggerRef : undefined}
 					type="button"
+					variant="ghost"
 					onClick={
 						showCommentTrigger
 							? isDesktop
@@ -684,14 +525,14 @@ export const AssistantMessage: FC = () => {
 					aria-hidden={!showCommentTrigger}
 					tabIndex={showCommentTrigger ? 0 : -1}
 					className={cn(
-						"flex items-center gap-1.5 rounded-full px-3 py-1 text-sm transition-colors",
+						"h-auto gap-1.5 rounded-full px-3 py-1 text-sm transition-colors",
 						"opacity-0 pointer-events-none",
 						showCommentTrigger && "opacity-100 pointer-events-auto",
 						isDesktop && isInlineOpen
 							? "bg-primary/10 text-primary"
 							: hasComments
 								? "text-primary hover:bg-primary/10"
-								: "text-muted-foreground hover:text-foreground hover:bg-muted"
+								: "text-muted-foreground hover:text-accent-foreground hover:bg-accent hover:text-accent-foreground"
 					)}
 				>
 					<MessageCircleReply className={cn("size-3.5", hasComments && "fill-current")} />
@@ -702,7 +543,7 @@ export const AssistantMessage: FC = () => {
 					) : (
 						<span>Add comment</span>
 					)}
-				</button>
+				</Button>
 			</div>
 
 			{/* Desktop floating comment panel — overlays on top of chat content */}
@@ -753,7 +594,7 @@ const AssistantActionBar: FC = () => {
 			className="aui-assistant-action-bar-root -ml-1 col-start-3 row-start-2 flex gap-1 text-muted-foreground md:data-floating:absolute md:data-floating:rounded-md md:data-floating:p-1 [&>button]:opacity-100 md:[&>button]:opacity-[var(--aui-button-opacity,1)]"
 		>
 			<ActionBarPrimitive.Copy asChild>
-				<TooltipIconButton tooltip="Copy to clipboard">
+				<TooltipIconButton tooltip="Copy">
 					<AuiIf condition={({ message }) => message.isCopied}>
 						<CheckIcon />
 					</AuiIf>
@@ -785,10 +626,7 @@ const AssistantActionBar: FC = () => {
 					<ClipboardPaste />
 				</TooltipIconButton>
 			)}
-			<MessageInfoDropdown />
-			<div className="ml-auto">
-				<RevertTurnButton chatTurnId={chatTurnId} />
-			</div>
+			<MessageInfoDropdown chatTurnId={chatTurnId} />
 		</ActionBarPrimitive.Root>
 	);
 };

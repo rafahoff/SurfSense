@@ -8,7 +8,7 @@ import {
 	useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import { useSetAtom } from "jotai";
-import { ExternalLinkIcon } from "lucide-react";
+import { ExternalLinkIcon, FileIcon, Folder as FolderIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { useTheme } from "next-themes";
@@ -18,10 +18,10 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { openEditorPanelAtom } from "@/atoms/editor/editor-panel.atom";
 import { ImagePreview, ImageRoot, ImageZoom } from "@/components/assistant-ui/image";
+import { MentionChip } from "@/components/assistant-ui/mention-chip";
 import "katex/dist/katex.min.css";
 import { toast } from "sonner";
 import { processChildrenWithCitations } from "@/components/citations/citation-renderer";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
 	Table,
 	TableBody,
@@ -32,33 +32,19 @@ import {
 } from "@/components/ui/table";
 import { useElectronAPI } from "@/hooks/use-platform";
 import { documentsApiService } from "@/lib/apis/documents-api.service";
+import { getVirtualPathDisplay } from "@/lib/chat/virtual-path-display";
 import { type CitationUrlMap, preprocessCitationMarkdown } from "@/lib/citations/citation-parser";
+import { tryGetHostname } from "@/lib/url";
 import { cn } from "@/lib/utils";
 
-function MarkdownCodeBlockSkeleton() {
-	return (
-		<div
-			className="mt-4 overflow-hidden rounded-2xl border"
-			style={{ background: "var(--syntax-bg)" }}
-		>
-			<div className="flex items-center justify-between gap-4 border-b px-4 py-2">
-				<Skeleton className="h-3 w-16" />
-				<Skeleton className="h-8 w-8 rounded-md" />
-			</div>
-			<div className="space-y-2 p-4">
-				<Skeleton className="h-4 w-11/12" />
-				<Skeleton className="h-4 w-10/12" />
-				<Skeleton className="h-4 w-8/12" />
-				<Skeleton className="h-4 w-9/12" />
-			</div>
-		</div>
-	);
+function MarkdownCodeBlockLoading() {
+	return <div className="mt-4 h-32 overflow-hidden rounded-md bg-accent" />;
 }
 
 const LazyMarkdownCodeBlock = dynamic(
 	() => import("./markdown-code-block").then((mod) => mod.MarkdownCodeBlock),
 	{
-		loading: () => <MarkdownCodeBlockSkeleton />,
+		loading: () => <MarkdownCodeBlockLoading />,
 	}
 );
 
@@ -137,15 +123,6 @@ const MarkdownTextImpl = () => {
 
 export const MarkdownText = memo(MarkdownTextImpl);
 
-function extractDomain(url: string): string {
-	try {
-		const parsed = new URL(url);
-		return parsed.hostname.replace(/^www\./, "");
-	} catch {
-		return "";
-	}
-}
-
 // Canonical local-file virtual paths are mount-prefixed: /<mount>/<relative/path>
 const LOCAL_FILE_PATH_REGEX = /^\/[a-z0-9_-]+\/[^\s`]+(?:\/[^\s`]+)*$/;
 
@@ -219,66 +196,74 @@ function FilePathLink({ path, className }: { path: string; className?: string })
 		? parsedSearchSpaceId
 		: undefined;
 
-	return (
-		<button
-			type="button"
-			className={cn(
-				"cursor-pointer font-mono text-[0.9em] font-medium text-primary underline underline-offset-4 transition-colors hover:text-primary/80",
-				className
-			)}
-			onClick={(event) => {
-				event.preventDefault();
-				event.stopPropagation();
-				void (async () => {
-					if (electronAPI) {
-						let resolvedLocalPath = path;
-						if (electronAPI.getAgentFilesystemMounts) {
-							try {
-								const mounts = (await electronAPI.getAgentFilesystemMounts(
-									resolvedSearchSpaceId
-								)) as AgentFilesystemMount[];
-								resolvedLocalPath = normalizeLocalVirtualPathForEditor(path, mounts);
-							} catch {
-								// Fall back to the raw path if mount lookup fails.
-							}
-						}
-						openEditorPanel({
-							kind: "local_file",
-							localFilePath: resolvedLocalPath,
-							title: resolvedLocalPath.split("/").pop() || resolvedLocalPath,
-							searchSpaceId: resolvedSearchSpaceId,
-						});
-						return;
-					}
+	const { displayName, isFolder } = getVirtualPathDisplay(path);
+	const icon = isFolder ? <FolderIcon className="size-3.5" /> : <FileIcon className="size-3.5" />;
 
-					if (!resolvedSearchSpaceId || !path.startsWith("/documents/")) return;
-					try {
-						const doc = await documentsApiService.getDocumentByVirtualPath({
-							search_space_id: resolvedSearchSpaceId,
-							virtual_path: path,
-						});
-						openEditorPanel({
-							kind: "document",
-							documentId: doc.id,
-							searchSpaceId: resolvedSearchSpaceId,
-							title: doc.title,
-						});
-					} catch {
-						toast.error("Document not found in knowledge base.");
+	const handleClick = useCallback(
+		(event: React.MouseEvent<HTMLButtonElement>) => {
+			event.preventDefault();
+			event.stopPropagation();
+			void (async () => {
+				if (electronAPI) {
+					let resolvedLocalPath = path;
+					if (electronAPI.getAgentFilesystemMounts) {
+						try {
+							const mounts = (await electronAPI.getAgentFilesystemMounts(
+								resolvedSearchSpaceId
+							)) as AgentFilesystemMount[];
+							resolvedLocalPath = normalizeLocalVirtualPathForEditor(path, mounts);
+						} catch {
+							// Fall back to the raw path if mount lookup fails.
+						}
 					}
-				})();
-			}}
-			title="Open in editor panel"
-		>
-			{path}
-		</button>
+					openEditorPanel({
+						kind: "local_file",
+						localFilePath: resolvedLocalPath,
+						title: resolvedLocalPath.split("/").pop() || resolvedLocalPath,
+						searchSpaceId: resolvedSearchSpaceId,
+					});
+					return;
+				}
+
+				if (!resolvedSearchSpaceId || !path.startsWith("/documents/")) return;
+				try {
+					const doc = await documentsApiService.getDocumentByVirtualPath({
+						search_space_id: resolvedSearchSpaceId,
+						virtual_path: path,
+					});
+					openEditorPanel({
+						kind: "document",
+						documentId: doc.id,
+						searchSpaceId: resolvedSearchSpaceId,
+						title: doc.title,
+					});
+				} catch {
+					toast.error("Document not found in knowledge base.");
+				}
+			})();
+		},
+		[electronAPI, openEditorPanel, path, resolvedSearchSpaceId]
+	);
+
+	// Folders cannot open in the editor panel — keep them as visual chips.
+	const onClick = isFolder ? undefined : handleClick;
+
+	return (
+		<MentionChip
+			icon={icon}
+			label={displayName || path}
+			tooltip={path}
+			onClick={onClick}
+			ariaLabel={isFolder ? `Folder ${displayName}` : `Open ${displayName}`}
+			className={className}
+		/>
 	);
 }
 
 function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
 	if (!src) return null;
 
-	const domain = extractDomain(src);
+	const domain = tryGetHostname(src) ?? "";
 
 	return (
 		<div className="my-4 w-fit max-w-lg overflow-hidden rounded-2xl border bg-muted/30 select-none">
@@ -440,7 +425,7 @@ const defaultComponents = memoizeMarkdownComponents({
 		<hr className={cn("aui-md-hr my-5 border-b", className)} {...props} />
 	),
 	table: ({ className, ...props }) => (
-		<div className="aui-md-table-wrapper my-5 overflow-hidden rounded-2xl border">
+		<div className="aui-md-table-wrapper my-5 overflow-hidden rounded-md border">
 			<Table className={cn("aui-md-table", className)} {...props} />
 		</div>
 	),
@@ -517,7 +502,7 @@ const defaultComponents = memoizeMarkdownComponents({
 			return (
 				<code
 					className={cn(
-						"aui-md-inline-code rounded-md border bg-muted px-1.5 py-0.5 font-mono text-[0.9em] font-normal",
+						"aui-md-inline-code rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[0.9em] font-normal text-primary/80",
 						className
 					)}
 					{...props}
@@ -530,7 +515,7 @@ const defaultComponents = memoizeMarkdownComponents({
 			return (
 				<code
 					className={cn(
-						"aui-md-inline-code rounded-md border bg-muted px-1.5 py-0.5 font-mono text-[0.9em] font-normal",
+						"aui-md-inline-code rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[0.9em] font-normal text-primary/80",
 						className
 					)}
 					{...props}
