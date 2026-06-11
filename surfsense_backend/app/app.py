@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import gc
 import logging
 import time
@@ -22,7 +23,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from app.agents.new_chat.checkpointer import (
+from app.agents.chat.runtime.checkpointer import (
     close_checkpointer,
     setup_checkpointer_tables,
 )
@@ -36,13 +37,27 @@ from app.config import (
 )
 from app.db import User, create_db_and_tables, get_async_session
 from app.exceptions import GENERIC_5XX_MESSAGE, ISSUES_URL, SurfSenseError
+from app.gateway.byo_long_poll import (
+    start_byo_long_poll_supervisors,
+    stop_byo_long_poll_supervisors,
+)
+from app.gateway.discord.intake import (
+    start_discord_gateway_supervisor,
+    stop_discord_gateway_supervisor,
+)
+from app.gateway.inbox_worker import (
+    start_gateway_inbox_worker,
+    stop_gateway_inbox_worker,
+)
+from app.observability import metrics as ot_metrics
+from app.observability.bootstrap import init_otel, shutdown_otel
 from app.rate_limiter import get_real_client_ip, limiter
 from app.routes import router as crud_router
 from app.routes.auth_routes import router as auth_router
 from app.schemas import UserCreate, UserRead, UserUpdate
-from app.tasks.surfsense_docs_indexer import seed_surfsense_docs
+from app.session_events import register_session_hooks
 from app.users import SECRET, auth_backend, current_active_user, fastapi_users
-from app.utils.perf import get_perf_logger, log_system_snapshot
+from app.utils.perf import log_system_snapshot
 
 _error_logger = logging.getLogger("surfsense.errors")
 
@@ -127,6 +142,8 @@ def _http_exception_handler(request: Request, exc: HTTPException) -> JSONRespons
       logged server-side.
     """
     rid = _get_request_id(request)
+    if exc.status_code in {401, 403} and request.url.path.startswith("/auth"):
+        ot_metrics.record_auth_failure(reason=_status_to_code(exc.status_code))
     should_sanitize = exc.status_code == 500
 
     # Structured dict details (e.g. {"code": "CAPTCHA_REQUIRED", "message": "..."})
@@ -213,6 +230,7 @@ def _validation_error_handler(
 def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all: log full traceback, return sanitized 500."""
     rid = _get_request_id(request)
+    ot_metrics.record_auth_failure(reason="unhandled_exception")
     _error_logger.error(
         "[%s] Unhandled exception on %s %s",
         rid,
@@ -246,6 +264,7 @@ def _status_to_code(status_code: int, detail: str = "") -> str:
 def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     """Custom 429 handler that returns JSON matching our error envelope."""
     rid = _get_request_id(request)
+    ot_metrics.record_rate_limit_rejection(scope="slowapi")
     retry_after = exc.detail.split("per")[-1].strip() if exc.detail else "60"
     return _build_error_response(
         429,
@@ -306,6 +325,7 @@ def _check_rate_limit_memory(
                 f"Rate limit exceeded (in-memory fallback) on {scope} for IP {client_ip} "
                 f"({len(timestamps)}/{max_requests} in {window_seconds}s)"
             )
+            ot_metrics.record_rate_limit_rejection(scope=scope)
             raise HTTPException(
                 status_code=429,
                 detail="RATE_LIMIT_EXCEEDED",
@@ -349,6 +369,7 @@ def _check_rate_limit(
             f"Rate limit exceeded on {scope} for IP {client_ip} "
             f"({current_count}/{max_requests} in {window_seconds}s)"
         )
+        ot_metrics.record_rate_limit_rejection(scope=scope)
         raise HTTPException(
             status_code=429,
             detail="RATE_LIMIT_EXCEEDED",
@@ -466,7 +487,7 @@ async def _warm_agent_jit_caches() -> None:
         )
         from langchain_core.tools import tool
 
-        from app.agents.new_chat.context import SurfSenseContextSchema
+        from app.agents.chat.shared.context import SurfSenseContextSchema
 
         # Minimal LLM stub. ``FakeListChatModel`` satisfies
         # ``BaseChatModel`` without any network or auth — perfect for
@@ -550,6 +571,41 @@ async def _warm_agent_jit_caches() -> None:
         )
 
 
+async def _warm_embedding_model() -> None:
+    """Pre-load/JIT the embedding model so the first KB search is fast.
+
+    With lazy KB retrieval (OpenCode-style), the main agent no longer embeds
+    on every turn — it calls the on-demand ``search_knowledge_base`` tool only
+    when it needs KB content, and that tool's first ``embed_texts`` call in a
+    fresh process pays the model's one-time load/JIT (local sentence-transformer
+    warm or API client init). Doing one throwaway embed at startup moves that
+    cost off the first real search.
+
+    Safety: behind the embedding global lock (run in a worker thread), bounded
+    by the caller's ``asyncio.wait_for``, and non-fatal — on any failure we log
+    and swallow so the worst case is the first real search pays the cold cost.
+    """
+    import time as _time
+
+    logger = logging.getLogger(__name__)
+    t0 = _time.perf_counter()
+    try:
+        from app.utils.document_converters import embed_texts
+
+        await asyncio.to_thread(embed_texts, ["warmup"])
+        logger.info(
+            "[startup] Embedding model warmup completed in %.3fs",
+            _time.perf_counter() - t0,
+        )
+    except Exception:
+        logger.warning(
+            "[startup] Embedding model warmup failed in %.3fs (non-fatal — first "
+            "KB search will pay the cold embed cost)",
+            _time.perf_counter() - t0,
+            exc_info=True,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Tune GC: lower gen-2 threshold so long-lived garbage is collected
@@ -558,6 +614,7 @@ async def lifespan(app: FastAPI):
     gc.set_threshold(700, 10, 5)
 
     _enable_slow_callback_logging(threshold_sec=0.5)
+    init_otel(app)
     await create_db_and_tables()
     await setup_checkpointer_tables()
     initialize_openrouter_integration()
@@ -566,13 +623,6 @@ async def lifespan(app: FastAPI):
     initialize_llm_router()
     initialize_image_gen_router()
     initialize_vision_llm_router()
-    try:
-        await asyncio.wait_for(seed_surfsense_docs(), timeout=120)
-    except TimeoutError:
-        logging.getLogger(__name__).warning(
-            "Surfsense docs seeding timed out after 120s — skipping. "
-            "Docs will be indexed on the next restart."
-        )
 
     # Phase 1.7 — JIT warmup. Bounded so a stuck warmup never delays
     # worker readiness. ``shield`` so Uvicorn cancelling startup
@@ -586,12 +636,31 @@ async def lifespan(app: FastAPI):
             "first real request will pay the full compile cost."
         )
 
+    # Phase 2 — embedding warmup so the first lazy ``search_knowledge_base``
+    # call doesn't pay the cold embed-model load. Bounded + non-fatal.
+    try:
+        await asyncio.wait_for(asyncio.shield(_warm_embedding_model()), timeout=20)
+    except (TimeoutError, Exception):  # pragma: no cover - defensive
+        logging.getLogger(__name__).warning(
+            "[startup] Embedding warmup hit timeout/error — skipping; "
+            "first KB search will pay the cold embed cost."
+        )
+
+    register_session_hooks()
     log_system_snapshot("startup_complete")
+    await start_gateway_inbox_worker()
+    await start_byo_long_poll_supervisors()
+    await start_discord_gateway_supervisor()
 
-    yield
-
-    _stop_openrouter_background_refresh()
-    await close_checkpointer()
+    try:
+        yield
+    finally:
+        await stop_discord_gateway_supervisor()
+        await stop_byo_long_poll_supervisors()
+        await stop_gateway_inbox_worker()
+        _stop_openrouter_background_refresh()
+        await close_checkpointer()
+        shutdown_otel()
 
 
 def registration_allowed():
@@ -676,32 +745,20 @@ class RequestPerfMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: StarletteRequest, call_next: RequestResponseEndpoint
     ) -> StarletteResponse:
-        perf = get_perf_logger()
         t0 = time.perf_counter()
         response = await call_next(request)
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         path = request.url.path
-        method = request.method
-        status = response.status_code
-
-        perf.debug(
-            "[request] %s %s -> %d in %.1fms",
-            method,
-            path,
-            status,
-            elapsed_ms,
-        )
 
         if elapsed_ms > _PERF_SLOW_REQUEST_THRESHOLD:
-            perf.warning(
-                "[SLOW_REQUEST] %s %s -> %d in %.1fms (threshold=%.0fms)",
-                method,
-                path,
-                status,
-                elapsed_ms,
-                _PERF_SLOW_REQUEST_THRESHOLD,
-            )
+            with contextlib.suppress(Exception):
+                from opentelemetry import trace
+
+                span = trace.get_current_span()
+                span.set_attribute("slow_request", True)
+                span.set_attribute("surfsense.request.elapsed_ms", elapsed_ms)
+                span.set_attribute("http.route", path)
             log_system_snapshot("slow_request")
 
         return response

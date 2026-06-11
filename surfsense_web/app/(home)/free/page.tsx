@@ -3,8 +3,6 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { AdUnit } from "@/components/ads/ad-unit";
 import { ADSENSE_SLOTS } from "@/components/ads/adsense-config";
-import { AdSenseScript } from "@/components/ads/adsense-script";
-import { BreadcrumbNav } from "@/components/seo/breadcrumb-nav";
 import { FAQJsonLd, JsonLd } from "@/components/seo/json-ld";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -160,7 +158,6 @@ export default async function FreeHubPage() {
 
 	return (
 		<div className="min-h-screen pt-20">
-			<AdSenseScript />
 			<JsonLd
 				data={{
 					"@context": "https://schema.org",
@@ -185,13 +182,6 @@ export default async function FreeHubPage() {
 			<FAQJsonLd questions={FAQ_ITEMS} />
 
 			<article className="container mx-auto px-4 pb-20">
-				<BreadcrumbNav
-					items={[
-						{ name: "Home", href: "/" },
-						{ name: "Free AI Chat", href: "/free" },
-					]}
-				/>
-
 				{/* Hero */}
 				<section className="mt-8 text-center max-w-3xl mx-auto">
 					<h1 className="text-4xl md:text-5xl font-bold tracking-tight">
@@ -221,10 +211,7 @@ export default async function FreeHubPage() {
 				<Separator className="my-12 max-w-4xl mx-auto" />
 
 				{/* In-content ad: above the model table */}
-				<aside
-					aria-label="Advertisement"
-					className="max-w-4xl mx-auto mb-8 min-h-[100px]"
-				>
+				<aside aria-label="Advertisement" className="max-w-4xl mx-auto mb-8 min-h-[100px]">
 					<AdUnit slot={ADSENSE_SLOTS.freeHubInContent} />
 				</aside>
 
@@ -353,10 +340,7 @@ export default async function FreeHubPage() {
 				<Separator className="my-12 max-w-4xl mx-auto" />
 
 				{/* In-content ad: after CTA, before FAQ */}
-				<aside
-					aria-label="Advertisement"
-					className="max-w-3xl mx-auto my-8 min-h-[100px]"
-				>
+				<aside aria-label="Advertisement" className="max-w-3xl mx-auto my-8 min-h-[100px]">
 					<AdUnit slot={ADSENSE_SLOTS.freeHubBeforeFaq} />
 				</aside>
 

@@ -43,6 +43,8 @@ from app.db import (
     async_session_maker,
     get_async_session,
 )
+from app.notifications.service import NotificationService
+from app.observability import metrics as ot_metrics, otel as ot
 from app.schemas import (
     GoogleDriveIndexRequest,
     MCPConnectorCreate,
@@ -54,7 +56,6 @@ from app.schemas import (
     SearchSourceConnectorUpdate,
 )
 from app.services.composio_service import ComposioService, get_composio_service
-from app.services.notification_service import NotificationService
 from app.users import current_active_user
 
 # NOTE: connector indexer functions are imported lazily inside each
@@ -104,7 +105,9 @@ async def _run_indexing_heartbeat_loop(notification_id: int) -> None:
             await asyncio.sleep(HEARTBEAT_REFRESH_INTERVAL)
             try:
                 get_heartbeat_redis_client().setex(key, HEARTBEAT_TTL_SECONDS, "alive")
+                ot_metrics.record_celery_heartbeat_refresh(heartbeat_type="connector")
             except Exception as e:
+                ot_metrics.record_celery_heartbeat_failure(heartbeat_type="connector")
                 logger.warning(
                     f"Failed to refresh Redis heartbeat for notification "
                     f"{notification_id}: {e}"
@@ -672,7 +675,9 @@ async def delete_search_source_connector(
         await session.commit()
 
         if is_mcp:
-            from app.agents.new_chat.tools.mcp_tool import invalidate_mcp_tools_cache
+            from app.agents.chat.multi_agent_chat.shared.tools.mcp.tool import (
+                invalidate_mcp_tools_cache,
+            )
 
             invalidate_mcp_tools_cache(search_space_id)
 
@@ -1243,6 +1248,12 @@ async def _persist_auth_expired(session: AsyncSession, connector_id: int) -> Non
     """Flag a connector as auth_expired so the frontend shows a re-auth prompt."""
     from sqlalchemy.orm.attributes import flag_modified
 
+    ot.add_event(
+        "connector.auth.expired",
+        {
+            "error.category": "auth_failed",
+        },
+    )
     try:
         result = await session.execute(
             select(SearchSourceConnector).where(
@@ -1302,6 +1313,13 @@ async def _run_indexing_with_notifications(
     try:
         connector_lock_acquired = acquire_connector_indexing_lock(connector_id)
         if not connector_lock_acquired:
+            ot.add_event(
+                "connector.sync.skipped",
+                {
+                    "skip.reason": "lock_contention",
+                    "error.category": "lock_contention",
+                },
+            )
             logger.info(
                 f"Skipping indexing for connector {connector_id} "
                 "(another worker already holds Redis connector lock)"
@@ -1338,7 +1356,13 @@ async def _run_indexing_with_notifications(
                     get_heartbeat_redis_client().setex(
                         heartbeat_key, HEARTBEAT_TTL_SECONDS, "0"
                     )
+                    ot_metrics.record_celery_heartbeat_refresh(
+                        heartbeat_type="connector"
+                    )
                 except Exception as e:
+                    ot_metrics.record_celery_heartbeat_failure(
+                        heartbeat_type="connector"
+                    )
                     logger.warning(f"Failed to set initial Redis heartbeat: {e}")
 
                 # Start a background coroutine that refreshes the
@@ -1366,6 +1390,15 @@ async def _run_indexing_with_notifications(
         ) -> None:
             """Callback to update notification during API retries (rate limits, etc.)"""
             nonlocal notification
+            ot.add_event(
+                "connector.retry.scheduled",
+                {
+                    "retry.reason": retry_reason,
+                    "retry.attempt": attempt,
+                    "retry.max": max_attempts,
+                    "retry.delay_ms": int(wait_seconds * 1000),
+                },
+            )
             if notification:
                 try:
                     await session.refresh(notification)
@@ -1397,8 +1430,14 @@ async def _run_indexing_with_notifications(
                     get_heartbeat_redis_client().setex(
                         heartbeat_key, HEARTBEAT_TTL_SECONDS, str(indexed_count)
                     )
+                    ot_metrics.record_celery_heartbeat_refresh(
+                        heartbeat_type="connector"
+                    )
                 except Exception as e:
                     # Don't let Redis errors break the indexing
+                    ot_metrics.record_celery_heartbeat_failure(
+                        heartbeat_type="connector"
+                    )
                     logger.warning(f"Failed to set Redis heartbeat: {e}")
 
                 try:
@@ -2650,7 +2689,7 @@ async def create_mcp_connector(
             f"for user {user.id} in search space {search_space_id}"
         )
 
-        from app.agents.new_chat.tools.mcp_tools_cache import (
+        from app.agents.chat.multi_agent_chat.shared.tools.mcp.cache import (
             refresh_mcp_tools_cache_for_connector,
         )
 
@@ -2830,7 +2869,7 @@ async def update_mcp_connector(
 
         logger.info(f"Updated MCP connector {connector_id}")
 
-        from app.agents.new_chat.tools.mcp_tools_cache import (
+        from app.agents.chat.multi_agent_chat.shared.tools.mcp.cache import (
             refresh_mcp_tools_cache_for_connector,
         )
 
@@ -2890,7 +2929,9 @@ async def delete_mcp_connector(
         await session.delete(connector)
         await session.commit()
 
-        from app.agents.new_chat.tools.mcp_tool import invalidate_mcp_tools_cache
+        from app.agents.chat.multi_agent_chat.shared.tools.mcp.tool import (
+            invalidate_mcp_tools_cache,
+        )
 
         invalidate_mcp_tools_cache(search_space_id)
 
@@ -2929,7 +2970,7 @@ async def test_mcp_server_connection(
         Connection status and list of available tools
     """
     try:
-        from app.agents.new_chat.tools.mcp_client import (
+        from app.agents.chat.multi_agent_chat.shared.tools.mcp.client import (
             test_mcp_connection,
             test_mcp_http_connection,
         )
@@ -3120,7 +3161,9 @@ async def trust_mcp_tool(
     connectors (``LINEAR_CONNECTOR``, ``JIRA_CONNECTOR``, ...) — the
     storage primitive is the same JSON list under ``config.trusted_tools``.
     """
-    from app.agents.new_chat.tools.mcp_tool import invalidate_mcp_tools_cache
+    from app.agents.chat.multi_agent_chat.shared.tools.mcp.tool import (
+        invalidate_mcp_tools_cache,
+    )
     from app.services.user_tool_allowlist import add_user_trust
 
     try:
@@ -3160,7 +3203,9 @@ async def untrust_mcp_tool(
 
     The tool will require HITL approval again on subsequent calls.
     """
-    from app.agents.new_chat.tools.mcp_tool import invalidate_mcp_tools_cache
+    from app.agents.chat.multi_agent_chat.shared.tools.mcp.tool import (
+        invalidate_mcp_tools_cache,
+    )
     from app.services.user_tool_allowlist import remove_user_trust
 
     try:

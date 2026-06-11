@@ -1,4 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from app.automations.api import router as automations_router
+from app.file_storage.api import router as file_storage_router
+from app.gateway import require_gateway_enabled
+from app.notifications.api import router as notifications_router
 
 from .agent_action_log_route import router as agent_action_log_router
 from .agent_flags_route import router as agent_flags_router
@@ -18,6 +23,9 @@ from .dropbox_add_connector_route import router as dropbox_add_connector_router
 from .editor_routes import router as editor_router
 from .export_routes import router as export_router
 from .folders_routes import router as folders_router
+from .gateway_webhook_routes import router as gateway_router
+from .gateway_whatsapp_baileys_routes import router as gateway_whatsapp_baileys_router
+from .gateway_whatsapp_webhook_routes import router as gateway_whatsapp_webhook_router
 from .google_calendar_add_connector_route import (
     router as google_calendar_add_connector_router,
 )
@@ -39,7 +47,6 @@ from .model_list_routes import router as model_list_router
 from .new_chat_routes import router as new_chat_router
 from .new_llm_config_routes import router as new_llm_config_router
 from .notes_routes import router as notes_router
-from .notifications_routes import router as notifications_router
 from .notion_add_connector_route import router as notion_add_connector_router
 from .obsidian_plugin_routes import router as obsidian_plugin_router
 from .onedrive_add_connector_route import router as onedrive_add_connector_router
@@ -53,7 +60,6 @@ from .search_source_connectors_routes import router as search_source_connectors_
 from .search_spaces_routes import router as search_spaces_router
 from .slack_add_connector_route import router as slack_add_connector_router
 from .stripe_routes import router as stripe_router
-from .surfsense_docs_routes import router as surfsense_docs_router
 from .team_memory_routes import router as team_memory_router
 from .teams_add_connector_route import router as teams_add_connector_router
 from .video_presentations_routes import router as video_presentations_router
@@ -68,6 +74,14 @@ router.include_router(editor_router)
 router.include_router(export_router)
 router.include_router(documents_router)
 router.include_router(folders_router)
+_gateway_enabled_dep = [Depends(require_gateway_enabled)]
+router.include_router(gateway_router, dependencies=_gateway_enabled_dep)
+router.include_router(
+    gateway_whatsapp_webhook_router, dependencies=_gateway_enabled_dep
+)
+router.include_router(
+    gateway_whatsapp_baileys_router, dependencies=_gateway_enabled_dep
+)
 router.include_router(notes_router)
 router.include_router(new_chat_router)  # Chat with assistant-ui persistence
 router.include_router(agent_revert_router)  # POST /threads/{id}/revert/{action_id}
@@ -106,7 +120,6 @@ router.include_router(new_llm_config_router)  # LLM configs with prompt configur
 router.include_router(model_list_router)  # Dynamic model catalogue from OpenRouter
 router.include_router(logs_router)
 router.include_router(circleback_webhook_router)  # Circleback meeting webhooks
-router.include_router(surfsense_docs_router)  # Surfsense documentation for citations
 router.include_router(notifications_router)  # Notifications with Zero sync
 router.include_router(
     mcp_oauth_router
@@ -119,3 +132,5 @@ router.include_router(youtube_router)  # YouTube playlist resolution
 router.include_router(prompts_router)
 router.include_router(memory_router)  # User personal memory (memory.md style)
 router.include_router(team_memory_router)  # Search-space team memory
+router.include_router(automations_router)  # Automations CRUD + run history
+router.include_router(file_storage_router)  # Original file metadata + download

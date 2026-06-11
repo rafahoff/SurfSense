@@ -14,6 +14,7 @@ from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Enum as SQLAlchemyEnum,
     ForeignKey,
@@ -439,6 +440,13 @@ class Permission(StrEnum):
     PUBLIC_SHARING_CREATE = "public_sharing:create"
     PUBLIC_SHARING_DELETE = "public_sharing:delete"
 
+    # Automations
+    AUTOMATIONS_CREATE = "automations:create"
+    AUTOMATIONS_READ = "automations:read"
+    AUTOMATIONS_UPDATE = "automations:update"
+    AUTOMATIONS_DELETE = "automations:delete"
+    AUTOMATIONS_EXECUTE = "automations:execute"
+
     # Full access wildcard
     FULL_ACCESS = "*"
 
@@ -494,6 +502,11 @@ DEFAULT_ROLE_PERMISSIONS = {
         # Public Sharing (can create and view, no delete)
         Permission.PUBLIC_SHARING_VIEW.value,
         Permission.PUBLIC_SHARING_CREATE.value,
+        # Automations (no delete)
+        Permission.AUTOMATIONS_CREATE.value,
+        Permission.AUTOMATIONS_READ.value,
+        Permission.AUTOMATIONS_UPDATE.value,
+        Permission.AUTOMATIONS_EXECUTE.value,
     ],
     "Viewer": [
         # Documents (read only)
@@ -525,6 +538,8 @@ DEFAULT_ROLE_PERMISSIONS = {
         Permission.SETTINGS_VIEW.value,
         # Public Sharing (view only)
         Permission.PUBLIC_SHARING_VIEW.value,
+        # Automations (read only)
+        Permission.AUTOMATIONS_READ.value,
     ],
 }
 
@@ -571,6 +586,58 @@ class ChatVisibility(StrEnum):
     PRIVATE = "PRIVATE"
     SEARCH_SPACE = "SEARCH_SPACE"
     # PUBLIC = "PUBLIC"  # Reserved for future implementation
+
+
+class ExternalChatPlatform(StrEnum):
+    TELEGRAM = "telegram"
+    WHATSAPP = "whatsapp"
+    SLACK = "slack"
+    DISCORD = "discord"
+    SIGNAL = "signal"
+
+
+class ExternalChatAccountMode(StrEnum):
+    CLOUD_SHARED = "cloud_shared"
+    SELF_HOST_BYO = "self_host_byo"
+
+
+class ExternalChatHealthStatus(StrEnum):
+    UNKNOWN = "unknown"
+    OK = "ok"
+    FAILING = "failing"
+
+
+class ExternalChatBindingState(StrEnum):
+    PENDING = "pending"
+    BOUND = "bound"
+    REVOKED = "revoked"
+    SUSPENDED = "suspended"
+
+
+class ExternalChatPeerKind(StrEnum):
+    DIRECT = "direct"
+    GROUP = "group"
+    CHANNEL = "channel"
+    UNKNOWN = "unknown"
+
+
+class ExternalChatEventKind(StrEnum):
+    MESSAGE = "message"
+    EDITED_MESSAGE = "edited_message"
+    CALLBACK_QUERY = "callback_query"
+    OTHER = "other"
+
+
+class ExternalChatEventStatus(StrEnum):
+    RECEIVED = "received"
+    PROCESSING = "processing"
+    PROCESSED = "processed"
+    IGNORED = "ignored"
+    FAILED = "failed"
+
+
+def _enum_values(enum_cls):
+    return [item.value for item in enum_cls]
 
 
 class NewChatThread(BaseModel, TimestampMixin):
@@ -645,6 +712,18 @@ class NewChatThread(BaseModel, TimestampMixin):
     # agent_llm_id changes). Unindexed: all reads are by primary key.
     pinned_llm_config_id = Column(Integer, nullable=True)
 
+    # Surface metadata for first-party SurfSense and external chat threads.
+    # Zero publishes all chat-message sources; the UI can decide which surfaces to render.
+    source = Column(
+        Text, nullable=False, default="surfsense", server_default="surfsense"
+    )
+    external_chat_binding_id = Column(
+        BigInteger,
+        ForeignKey("external_chat_bindings.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Relationships
     search_space = relationship("SearchSpace", back_populates="new_chat_threads")
     created_by = relationship("User", back_populates="new_chat_threads")
@@ -664,6 +743,11 @@ class NewChatThread(BaseModel, TimestampMixin):
         "TokenUsage",
         back_populates="thread",
         cascade="all, delete-orphan",
+    )
+    external_chat_binding = relationship(
+        "ExternalChatBinding",
+        foreign_keys=[external_chat_binding_id],
+        back_populates="threads",
     )
 
 
@@ -718,6 +802,13 @@ class NewChatMessage(BaseModel, TimestampMixin):
     # a message back to the LangGraph checkpoint that produced its turn.
     turn_id = Column(String(64), nullable=True, index=True)
 
+    # Mirrors the parent thread source for publication-level filtering.
+    # This denormalization avoids join-dependent logical replication rules.
+    source = Column(
+        Text, nullable=False, default="surfsense", server_default="surfsense"
+    )
+    platform_metadata = Column(JSONB, nullable=True)
+
     # Relationships
     thread = relationship("NewChatThread", back_populates="messages")
     author = relationship("User")
@@ -731,6 +822,310 @@ class NewChatMessage(BaseModel, TimestampMixin):
         back_populates="message",
         uselist=False,
         cascade="all, delete-orphan",
+    )
+
+
+class ExternalChatAccount(Base, TimestampMixin):
+    __tablename__ = "external_chat_accounts"
+    __allow_unmapped__ = True
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    platform = Column(
+        SQLAlchemyEnum(
+            ExternalChatPlatform,
+            name="external_chat_platform",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+    )
+    mode = Column(
+        SQLAlchemyEnum(
+            ExternalChatAccountMode,
+            name="external_chat_account_mode",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+    )
+    owner_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=True
+    )
+    owner_search_space_id = Column(
+        Integer, ForeignKey("searchspaces.id", ondelete="CASCADE"), nullable=True
+    )
+    is_system_account = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    encrypted_credentials = Column(Text, nullable=True)
+    bot_username = Column(String(255), nullable=True)
+    webhook_secret = Column(String(64), nullable=True)
+    cursor_state = Column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    health_status = Column(
+        SQLAlchemyEnum(
+            ExternalChatHealthStatus,
+            name="external_chat_health_status",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+        default=ExternalChatHealthStatus.UNKNOWN,
+        server_default=ExternalChatHealthStatus.UNKNOWN.value,
+    )
+    last_health_check_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    suspended_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    suspended_reason = Column(Text, nullable=True)
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        server_default=text("(now() AT TIME ZONE 'utc')"),
+    )
+
+    owner = relationship("User", foreign_keys=[owner_user_id])
+    owner_search_space = relationship(
+        "SearchSpace", foreign_keys=[owner_search_space_id]
+    )
+    bindings = relationship(
+        "ExternalChatBinding",
+        back_populates="account",
+        cascade="all, delete-orphan",
+    )
+    inbound_events = relationship(
+        "ExternalChatInboundEvent",
+        back_populates="account",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(is_system_account = true AND owner_user_id IS NULL) OR "
+            "(is_system_account = false AND owner_user_id IS NOT NULL)",
+            name="ck_external_chat_accounts_owner_shape",
+        ),
+        Index(
+            "uq_external_chat_accounts_owner_platform",
+            "owner_user_id",
+            "platform",
+            unique=True,
+            postgresql_where=text("is_system_account = false"),
+        ),
+        Index(
+            "uq_external_chat_accounts_system_platform",
+            "platform",
+            unique=True,
+            postgresql_where=text(
+                "is_system_account = true "
+                "AND NOT (cursor_state ? 'team_id') "
+                "AND NOT (cursor_state ? 'guild_id')"
+            ),
+        ),
+        Index(
+            "uq_external_chat_accounts_slack_team",
+            "platform",
+            text("(cursor_state ->> 'team_id')"),
+            unique=True,
+            postgresql_where=text(
+                "is_system_account = true AND cursor_state ? 'team_id'"
+            ),
+        ),
+        Index(
+            "uq_external_chat_accounts_discord_guild",
+            "platform",
+            text("(cursor_state ->> 'guild_id')"),
+            unique=True,
+            postgresql_where=text(
+                "is_system_account = true AND cursor_state ? 'guild_id'"
+            ),
+        ),
+        Index(
+            "uq_external_chat_accounts_webhook_secret",
+            "webhook_secret",
+            unique=True,
+            postgresql_where=text("webhook_secret IS NOT NULL"),
+        ),
+    )
+
+
+class ExternalChatBinding(Base, TimestampMixin):
+    __tablename__ = "external_chat_bindings"
+    __allow_unmapped__ = True
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    account_id = Column(
+        BigInteger,
+        ForeignKey("external_chat_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False
+    )
+    search_space_id = Column(
+        Integer, ForeignKey("searchspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    state = Column(
+        SQLAlchemyEnum(
+            ExternalChatBindingState,
+            name="external_chat_binding_state",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+        default=ExternalChatBindingState.PENDING,
+        server_default=ExternalChatBindingState.PENDING.value,
+    )
+    pairing_code = Column(Text, nullable=True)
+    pairing_code_expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    external_peer_id = Column(Text, nullable=True)
+    external_peer_kind = Column(
+        SQLAlchemyEnum(
+            ExternalChatPeerKind,
+            name="external_chat_peer_kind",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+        default=ExternalChatPeerKind.UNKNOWN,
+        server_default=ExternalChatPeerKind.UNKNOWN.value,
+    )
+    external_thread_id = Column(Text, nullable=True)
+    external_display_name = Column(Text, nullable=True)
+    external_username = Column(Text, nullable=True)
+    external_metadata = Column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    new_chat_thread_id = Column(
+        Integer,
+        ForeignKey("new_chat_threads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    revoked_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    suspended_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    suspended_reason = Column(Text, nullable=True)
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        server_default=text("(now() AT TIME ZONE 'utc')"),
+    )
+
+    account = relationship("ExternalChatAccount", back_populates="bindings")
+    user = relationship("User", foreign_keys=[user_id])
+    search_space = relationship("SearchSpace", foreign_keys=[search_space_id])
+    new_chat_thread = relationship("NewChatThread", foreign_keys=[new_chat_thread_id])
+    threads = relationship(
+        "NewChatThread",
+        back_populates="external_chat_binding",
+        foreign_keys="NewChatThread.external_chat_binding_id",
+    )
+    inbound_events = relationship(
+        "ExternalChatInboundEvent",
+        back_populates="binding",
+        foreign_keys="ExternalChatInboundEvent.external_chat_binding_id",
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_external_chat_bindings_account_peer_active",
+            "account_id",
+            "external_peer_id",
+            unique=True,
+            postgresql_where=text(
+                "state IN ('bound', 'suspended') AND external_peer_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_external_chat_bindings_pairing_code_pending",
+            "pairing_code",
+            unique=True,
+            postgresql_where=text("state = 'pending'"),
+        ),
+        Index("ix_external_chat_bindings_user_state", "user_id", "state"),
+        Index(
+            "ix_external_chat_bindings_search_space_state", "search_space_id", "state"
+        ),
+    )
+
+
+class ExternalChatInboundEvent(Base, TimestampMixin):
+    __tablename__ = "external_chat_inbound_events"
+    __allow_unmapped__ = True
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    account_id = Column(
+        BigInteger,
+        ForeignKey("external_chat_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    external_chat_binding_id = Column(
+        BigInteger,
+        ForeignKey("external_chat_bindings.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    platform = Column(
+        SQLAlchemyEnum(
+            ExternalChatPlatform,
+            name="external_chat_platform",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+    )
+    event_dedupe_key = Column(Text, nullable=False)
+    external_event_id = Column(Text, nullable=True)
+    external_message_id = Column(Text, nullable=True)
+    event_kind = Column(
+        SQLAlchemyEnum(
+            ExternalChatEventKind,
+            name="external_chat_event_kind",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+    )
+    raw_payload = Column(JSONB, nullable=True)
+    request_id = Column(String(64), nullable=True)
+    status = Column(
+        SQLAlchemyEnum(
+            ExternalChatEventStatus,
+            name="external_chat_event_status",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+        default=ExternalChatEventStatus.RECEIVED,
+        server_default=ExternalChatEventStatus.RECEIVED.value,
+    )
+    attempt_count = Column(Integer, nullable=False, default=0, server_default="0")
+    last_error = Column(Text, nullable=True)
+    received_at = Column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=text("(now() AT TIME ZONE 'utc')"),
+    )
+    processed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    account = relationship("ExternalChatAccount", back_populates="inbound_events")
+    binding = relationship("ExternalChatBinding", back_populates="inbound_events")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "event_dedupe_key",
+            name="uq_external_chat_inbound_account_dedupe_key",
+        ),
+        Index("ix_external_chat_inbound_status_received_at", "status", "received_at"),
+        Index(
+            "ix_external_chat_inbound_binding_received_at",
+            "external_chat_binding_id",
+            "received_at",
+        ),
+        Index(
+            "ix_external_chat_inbound_request_id",
+            "request_id",
+            postgresql_where=text("request_id IS NOT NULL"),
+        ),
     )
 
 
@@ -1097,6 +1492,11 @@ class Document(BaseModel, TimestampMixin):
     chunks = relationship(
         "Chunk", back_populates="document", cascade="all, delete-orphan"
     )
+    # Original upload + future derived artifacts (redacted, filled-form).
+    # Model lives in app.file_storage.persistence to keep that feature cohesive.
+    files = relationship(
+        "DocumentFile", back_populates="document", cascade="all, delete-orphan"
+    )
 
 
 class DocumentVersion(BaseModel, TimestampMixin):
@@ -1134,46 +1534,6 @@ class Chunk(BaseModel, TimestampMixin):
         index=True,
     )
     document = relationship("Document", back_populates="chunks")
-
-
-class SurfsenseDocsDocument(BaseModel, TimestampMixin):
-    """
-    Surfsense documentation storage.
-    Indexed at migration time from MDX files.
-    """
-
-    __tablename__ = "surfsense_docs_documents"
-
-    source = Column(
-        String, nullable=False, unique=True, index=True
-    )  # File path: "connectors/slack.mdx"
-    title = Column(String, nullable=False)
-    content = Column(Text, nullable=False)
-    content_hash = Column(String, nullable=False, index=True)  # For detecting changes
-    embedding = Column(Vector(config.embedding_model_instance.dimension))
-    updated_at = Column(TIMESTAMP(timezone=True), nullable=True, index=True)
-
-    chunks = relationship(
-        "SurfsenseDocsChunk",
-        back_populates="document",
-        cascade="all, delete-orphan",
-    )
-
-
-class SurfsenseDocsChunk(BaseModel, TimestampMixin):
-    """Chunk storage for Surfsense documentation."""
-
-    __tablename__ = "surfsense_docs_chunks"
-
-    content = Column(Text, nullable=False)
-    embedding = Column(Vector(config.embedding_model_instance.dimension))
-
-    document_id = Column(
-        Integer,
-        ForeignKey("surfsense_docs_documents.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    document = relationship("SurfsenseDocsDocument", back_populates="chunks")
 
 
 class Podcast(BaseModel, TimestampMixin):
@@ -1435,9 +1795,6 @@ class SearchSpace(BaseModel, TimestampMixin):
     agent_llm_id = Column(
         Integer, nullable=True, default=0
     )  # For agent/chat operations, defaults to Auto mode
-    document_summary_llm_id = Column(
-        Integer, nullable=True, default=0
-    )  # For document summarization, defaults to Auto mode
     image_generation_config_id = Column(
         Integer, nullable=True, default=0
     )  # For image generation, defaults to Auto mode
@@ -1533,6 +1890,14 @@ class SearchSpace(BaseModel, TimestampMixin):
         cascade="all, delete-orphan",
     )
 
+    automations = relationship(
+        "Automation",
+        back_populates="search_space",
+        order_by="Automation.id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     # RBAC relationships
     roles = relationship(
         "SearchSpaceRole",
@@ -1596,12 +1961,6 @@ class SearchSourceConnector(BaseModel, TimestampMixin):
     is_indexable = Column(Boolean, nullable=False, default=False)
     last_indexed_at = Column(TIMESTAMP(timezone=True), nullable=True)
     config = Column(JSON, nullable=False)
-
-    # Summary generation (LLM-based) - disabled by default to save resources.
-    # When enabled, improves hybrid search quality at the cost of LLM calls.
-    enable_summary = Column(
-        Boolean, nullable=False, default=False, server_default="false"
-    )
 
     # Vision LLM for image files - disabled by default to save cost/time.
     # When enabled, images are described via a vision language model instead
@@ -1704,60 +2063,6 @@ class Log(BaseModel, TimestampMixin):
         Integer, ForeignKey("searchspaces.id", ondelete="CASCADE"), nullable=False
     )
     search_space = relationship("SearchSpace", back_populates="logs")
-
-
-class Notification(BaseModel, TimestampMixin):
-    __tablename__ = "notifications"
-    __table_args__ = (
-        # Composite index for unread-count queries that filter by
-        # (user_id, read, type) and order by created_at.
-        Index(
-            "ix_notifications_user_read_type_created",
-            "user_id",
-            "read",
-            "type",
-            "created_at",
-        ),
-        # Covers the common list query: user_id + search_space_id + created_at DESC
-        Index(
-            "ix_notifications_user_space_created",
-            "user_id",
-            "search_space_id",
-            "created_at",
-        ),
-    )
-
-    user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("user.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    search_space_id = Column(
-        Integer,
-        ForeignKey("searchspaces.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-    type = Column(
-        String(50), nullable=False, index=True
-    )  # 'connector_indexing', 'document_processing', etc.
-    title = Column(String(200), nullable=False)
-    message = Column(Text, nullable=False)
-    read = Column(
-        Boolean, nullable=False, default=False, server_default=text("false"), index=True
-    )
-    notification_metadata = Column("metadata", JSONB, nullable=True, default={})
-    updated_at = Column(
-        TIMESTAMP(timezone=True),
-        nullable=True,
-        default=lambda: datetime.now(UTC),
-        onupdate=lambda: datetime.now(UTC),
-        index=True,
-    )
-
-    user = relationship("User", back_populates="notifications")
-    search_space = relationship("SearchSpace", back_populates="notifications")
 
 
 class UserIncentiveTask(BaseModel, TimestampMixin):
@@ -2125,6 +2430,13 @@ if config.AUTH_TYPE == "GOOGLE":
             passive_deletes=True,
         )
 
+        # Automations created by this user
+        automations = relationship(
+            "Automation",
+            back_populates="created_by",
+            passive_deletes=True,
+        )
+
         # Incentive tasks completed by this user
         incentive_tasks = relationship(
             "UserIncentiveTask",
@@ -2254,6 +2566,13 @@ else:
         vision_llm_configs = relationship(
             "VisionLLMConfig",
             back_populates="user",
+            passive_deletes=True,
+        )
+
+        # Automations created by this user
+        automations = relationship(
+            "Automation",
+            back_populates="created_by",
             passive_deletes=True,
         )
 
@@ -2560,6 +2879,17 @@ class RefreshToken(Base, TimestampMixin):
         return not self.is_expired and not self.is_revoked
 
 
+# Register model packages that live outside this file so their classes
+# are present in Base.metadata before configure_mappers() resolves any
+# string-based relationship() references.
+from app.automations.persistence import (  # noqa: E402, F401
+    Automation,
+    AutomationRun,
+    AutomationTrigger,
+)
+from app.file_storage.persistence import DocumentFile  # noqa: E402, F401
+from app.notifications.persistence import Notification  # noqa: E402, F401
+
 engine = create_async_engine(
     DATABASE_URL,
     pool_size=30,
@@ -2594,7 +2924,7 @@ async def shielded_async_session():
 async def setup_indexes():
     async with engine.begin() as conn:
         # Create indexes
-        # Document Summary Indexes
+        # Document embedding indexes
         await conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS document_vector_index ON documents USING hnsw (embedding public.vector_cosine_ops)"
@@ -2633,11 +2963,6 @@ async def setup_indexes():
         await conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS idx_documents_search_space_updated ON documents (search_space_id, updated_at DESC NULLS LAST) INCLUDE (id, title, document_type)"
-            )
-        )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS idx_surfsense_docs_title_trgm ON surfsense_docs_documents USING gin (title gin_trgm_ops)"
             )
         )
 

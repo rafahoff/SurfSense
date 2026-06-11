@@ -19,10 +19,8 @@ function stableEntries(obj: Record<string, unknown> | null | undefined): unknown
 export const cacheKeys = {
 	// New chat threads (assistant-ui)
 	threads: {
-		list: (searchSpaceId: number) => ["threads", searchSpaceId] as const,
 		detail: (threadId: number) => ["threads", "detail", threadId] as const,
-		search: (searchSpaceId: number, query: string) =>
-			["threads", "search", searchSpaceId, query] as const,
+		messages: (threadId: number) => ["threads", "messages", threadId] as const,
 	},
 	documents: {
 		globalQueryParams: (queries: GetDocumentsRequest["queryParams"]) =>
@@ -30,7 +28,6 @@ export const cacheKeys = {
 		withQueryParams: (queries: GetDocumentsRequest["queryParams"]) =>
 			["documents-with-queries", ...stableEntries(queries)] as const,
 		document: (documentId: string) => ["document", documentId] as const,
-		byChunk: (chunkId: string) => ["documents", "by-chunk", chunkId] as const,
 	},
 	logs: {
 		list: (searchSpaceId?: number | string) => ["logs", "list", searchSpaceId] as const,
@@ -125,5 +122,17 @@ export const cacheKeys = {
 			["notifications", "source-types", searchSpaceId] as const,
 		batchUnreadCounts: (searchSpaceId: number | null) =>
 			["notifications", "unread-counts-batch", searchSpaceId] as const,
+	},
+	automations: {
+		// list endpoint is keyed by pagination too so distinct pages don't collide
+		list: (searchSpaceId: number, limit: number, offset: number) =>
+			["automations", "list", searchSpaceId, limit, offset] as const,
+		detail: (automationId: number) => ["automations", "detail", automationId] as const,
+		runs: (automationId: number, limit: number, offset: number) =>
+			["automations", "runs", automationId, limit, offset] as const,
+		run: (automationId: number, runId: number) =>
+			["automations", "runs", automationId, runId] as const,
+		modelEligibility: (searchSpaceId: number) =>
+			["automations", "model-eligibility", searchSpaceId] as const,
 	},
 };

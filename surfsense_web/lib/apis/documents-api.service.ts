@@ -3,6 +3,7 @@ import {
 	createDocumentRequest,
 	createDocumentResponse,
 	type DeleteDocumentRequest,
+	type DocumentFileRead,
 	deleteDocumentRequest,
 	deleteDocumentResponse,
 	documentTitleRead,
@@ -12,11 +13,11 @@ import {
 	type GetDocumentsRequest,
 	type GetDocumentsStatusRequest,
 	type GetDocumentTypeCountsRequest,
-	type GetSurfsenseDocsRequest,
 	getDocumentByChunkRequest,
 	getDocumentByChunkResponse,
 	getDocumentChunksRequest,
 	getDocumentChunksResponse,
+	getDocumentFilesResponse,
 	getDocumentRequest,
 	getDocumentResponse,
 	getDocumentsRequest,
@@ -25,9 +26,6 @@ import {
 	getDocumentsStatusResponse,
 	getDocumentTypeCountsRequest,
 	getDocumentTypeCountsResponse,
-	getSurfsenseDocsByChunkResponse,
-	getSurfsenseDocsRequest,
-	getSurfsenseDocsResponse,
 	type SearchDocumentsRequest,
 	type SearchDocumentTitlesRequest,
 	searchDocumentsRequest,
@@ -128,8 +126,7 @@ class DocumentsApiService {
 			throw new ValidationError(`Invalid request: ${errorMessage}`);
 		}
 
-		const { files, search_space_id, should_summarize, use_vision_llm, processing_mode } =
-			parsedRequest.data;
+		const { files, search_space_id, use_vision_llm, processing_mode } = parsedRequest.data;
 		const UPLOAD_BATCH_SIZE = 5;
 
 		const batches: File[][] = [];
@@ -147,7 +144,6 @@ class DocumentsApiService {
 			const formData = new FormData();
 			for (const file of batch) formData.append("files", file);
 			formData.append("search_space_id", String(search_space_id));
-			formData.append("should_summarize", String(should_summarize));
 			formData.append("use_vision_llm", String(use_vision_llm));
 			formData.append("processing_mode", processing_mode);
 
@@ -364,48 +360,6 @@ class DocumentsApiService {
 	};
 
 	/**
-	 * Get Surfsense documentation by chunk ID
-	 * Used for resolving [citation:doc-XXX] citations
-	 */
-	getSurfsenseDocByChunk = async (chunkId: number) => {
-		return baseApiService.get(
-			`/api/v1/surfsense-docs/by-chunk/${chunkId}`,
-			getSurfsenseDocsByChunkResponse
-		);
-	};
-
-	/**
-	 * List all Surfsense documentation documents
-	 * @param request - The request with query params
-	 * @param signal - Optional AbortSignal for request cancellation
-	 */
-	getSurfsenseDocs = async (request: GetSurfsenseDocsRequest, signal?: AbortSignal) => {
-		const parsedRequest = getSurfsenseDocsRequest.safeParse(request);
-
-		if (!parsedRequest.success) {
-			console.error("Invalid request:", parsedRequest.error);
-
-			const errorMessage = parsedRequest.error.issues.map((issue) => issue.message).join(", ");
-			throw new ValidationError(`Invalid request: ${errorMessage}`);
-		}
-
-		// Transform query params to be string values
-		const transformedQueryParams = parsedRequest.data.queryParams
-			? Object.fromEntries(
-					Object.entries(parsedRequest.data.queryParams).map(([k, v]) => [k, String(v)])
-				)
-			: undefined;
-
-		const queryParams = transformedQueryParams
-			? new URLSearchParams(transformedQueryParams).toString()
-			: "";
-
-		const url = `/api/v1/surfsense-docs?${queryParams}`;
-
-		return baseApiService.get(url, getSurfsenseDocsResponse, { signal });
-	};
-
-	/**
 	 * Update a document
 	 */
 	updateDocument = async (request: UpdateDocumentRequest) => {
@@ -425,6 +379,14 @@ class DocumentsApiService {
 		return baseApiService.put(`/api/v1/documents/${id}`, updateDocumentResponse, {
 			body: data,
 		});
+	};
+
+	/**
+	 * List the stored files for a document (e.g. its original upload).
+	 * Used to gate the "Download original" affordance.
+	 */
+	getDocumentFiles = async (documentId: number): Promise<DocumentFileRead[]> => {
+		return baseApiService.get(`/api/v1/documents/${documentId}/files`, getDocumentFilesResponse);
 	};
 
 	listDocumentVersions = async (documentId: number) => {
@@ -456,7 +418,6 @@ class DocumentsApiService {
 			search_space_id: number;
 			relative_paths: string[];
 			root_folder_id?: number | null;
-			enable_summary?: boolean;
 			use_vision_llm?: boolean;
 			processing_mode?: "basic" | "premium";
 		},
@@ -472,7 +433,6 @@ class DocumentsApiService {
 		if (metadata.root_folder_id != null) {
 			formData.append("root_folder_id", String(metadata.root_folder_id));
 		}
-		formData.append("enable_summary", String(metadata.enable_summary ?? false));
 		formData.append("use_vision_llm", String(metadata.use_vision_llm ?? false));
 		formData.append("processing_mode", metadata.processing_mode ?? "basic");
 

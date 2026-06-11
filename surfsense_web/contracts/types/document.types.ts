@@ -27,7 +27,6 @@ export const documentTypeEnum = z.enum([
 	"CIRCLEBACK",
 	"OBSIDIAN_CONNECTOR",
 	"LOCAL_FOLDER_FILE",
-	"SURFSENSE_DOCS",
 	"NOTE",
 	"USER_MEMORY",
 	"TEAM_MEMORY",
@@ -75,27 +74,6 @@ export const documentWithChunks = document.extend({
 	),
 	total_chunks: z.number().optional().default(0),
 	chunk_start_index: z.number().optional().default(0),
-});
-
-/**
- * Surfsense documentation schemas
- * Follows the same pattern as document/documentWithChunks
- */
-export const surfsenseDocsChunk = z.object({
-	id: z.number(),
-	content: z.string(),
-});
-
-export const surfsenseDocsDocument = z.object({
-	id: z.number(),
-	title: z.string(),
-	source: z.string(),
-	public_url: z.string(),
-	content: z.string(),
-});
-
-export const surfsenseDocsDocumentWithChunks = surfsenseDocsDocument.extend({
-	chunks: z.array(surfsenseDocsChunk),
 });
 
 /**
@@ -152,7 +130,6 @@ export const processingModeEnum = z.enum(["basic", "premium"]);
 export const uploadDocumentRequest = z.object({
 	files: z.array(z.instanceof(File)),
 	search_space_id: z.number(),
-	should_summarize: z.boolean().default(false),
 	use_vision_llm: z.boolean().default(false),
 	processing_mode: processingModeEnum.default("basic"),
 });
@@ -285,32 +262,6 @@ export const getDocumentChunksResponse = z.object({
 });
 
 /**
- * Get Surfsense docs by chunk
- */
-export const getSurfsenseDocsByChunkRequest = z.object({
-	chunk_id: z.number(),
-});
-
-export const getSurfsenseDocsByChunkResponse = surfsenseDocsDocumentWithChunks;
-
-/**
- * List Surfsense docs
- */
-export const getSurfsenseDocsRequest = z.object({
-	queryParams: paginationQueryParams.extend({
-		title: z.string().optional(),
-	}),
-});
-
-export const getSurfsenseDocsResponse = z.object({
-	items: z.array(surfsenseDocsDocument),
-	total: z.number(),
-	page: z.number(),
-	page_size: z.number(),
-	has_more: z.boolean(),
-});
-
-/**
  * Update document
  */
 export const updateDocumentRequest = z.object({
@@ -328,6 +279,23 @@ export const deleteDocumentRequest = document.pick({ id: true });
 export const deleteDocumentResponse = z.object({
 	message: z.literal("Document deleted successfully"),
 });
+
+/**
+ * Document files (stored originals / derived artifacts)
+ */
+export const documentFileKindEnum = z.enum(["ORIGINAL", "REDACTED", "FILLED_FORM"]);
+
+export const documentFileRead = z.object({
+	id: z.number(),
+	document_id: z.number(),
+	kind: documentFileKindEnum,
+	original_filename: z.string(),
+	mime_type: z.string().nullable().optional(),
+	size_bytes: z.number(),
+	created_at: z.string(),
+});
+
+export const getDocumentFilesResponse = z.array(documentFileRead);
 
 export type Document = z.infer<typeof document>;
 export type DocumentTitleRead = z.infer<typeof documentTitleRead>;
@@ -358,14 +326,10 @@ export type DeleteDocumentResponse = z.infer<typeof deleteDocumentResponse>;
 export type DocumentTypeEnum = z.infer<typeof documentTypeEnum>;
 export type DocumentSortBy = z.infer<typeof documentSortByEnum>;
 export type SortOrder = z.infer<typeof sortOrderEnum>;
-export type SurfsenseDocsChunk = z.infer<typeof surfsenseDocsChunk>;
-export type SurfsenseDocsDocument = z.infer<typeof surfsenseDocsDocument>;
-export type SurfsenseDocsDocumentWithChunks = z.infer<typeof surfsenseDocsDocumentWithChunks>;
-export type GetSurfsenseDocsByChunkRequest = z.infer<typeof getSurfsenseDocsByChunkRequest>;
-export type GetSurfsenseDocsByChunkResponse = z.infer<typeof getSurfsenseDocsByChunkResponse>;
-export type GetSurfsenseDocsRequest = z.infer<typeof getSurfsenseDocsRequest>;
-export type GetSurfsenseDocsResponse = z.infer<typeof getSurfsenseDocsResponse>;
 export type GetDocumentChunksRequest = z.infer<typeof getDocumentChunksRequest>;
 export type GetDocumentChunksResponse = z.infer<typeof getDocumentChunksResponse>;
 export type ChunkRead = z.infer<typeof chunkRead>;
 export type ProcessingMode = z.infer<typeof processingModeEnum>;
+export type DocumentFileKind = z.infer<typeof documentFileKindEnum>;
+export type DocumentFileRead = z.infer<typeof documentFileRead>;
+export type GetDocumentFilesResponse = z.infer<typeof getDocumentFilesResponse>;

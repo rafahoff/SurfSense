@@ -1,18 +1,21 @@
 "use client";
 
-import { ThreadPrimitive } from "@assistant-ui/react";
+import { AuiIf, ThreadPrimitive } from "@assistant-ui/react";
 import { ArrowDownIcon } from "lucide-react";
 import type { FC, ReactNode } from "react";
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { Button } from "@/components/ui/button";
 
 const ChatScrollToBottom: FC = () => (
 	<ThreadPrimitive.ScrollToBottom asChild>
-		<TooltipIconButton
-			tooltip="Scroll to bottom"
-			className="aui-thread-scroll-to-bottom -top-12 absolute z-10 self-center rounded-full border-0 bg-muted p-4 text-foreground hover:bg-accent hover:text-accent-foreground disabled:invisible"
+		<Button
+			type="button"
+			variant="ghost"
+			size="icon"
+			aria-label="Scroll to bottom"
+			className="aui-thread-scroll-to-bottom -top-12 absolute z-10 size-10 self-center rounded-full border border-input bg-muted p-0 text-foreground shadow-sm shadow-black/5 hover:bg-accent hover:text-accent-foreground disabled:invisible dark:shadow-black/10"
 		>
 			<ArrowDownIcon />
-		</TooltipIconButton>
+		</Button>
 	</ThreadPrimitive.ScrollToBottom>
 );
 
@@ -37,15 +40,17 @@ export const ChatViewport: FC<ChatViewportProps> = ({ children, footer }) => (
 		/>
 		{children}
 		{footer ? (
-			<ThreadPrimitive.ViewportFooter
-				className="aui-chat-composer-footer sticky bottom-0 z-20 -mx-4 mt-auto flex flex-col items-stretch bg-gradient-to-t from-main-panel from-60% to-transparent px-4 pt-6"
-				style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
-			>
-				<div className="aui-chat-composer-area relative mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible">
-					<ChatScrollToBottom />
-					{footer}
-				</div>
-			</ThreadPrimitive.ViewportFooter>
+			<AuiIf condition={({ thread }) => !thread.isEmpty}>
+				<ThreadPrimitive.ViewportFooter
+					className="aui-chat-composer-footer sticky bottom-0 z-20 -mx-4 mt-auto flex flex-col items-stretch bg-gradient-to-t from-main-panel from-60% to-transparent px-4 pt-6"
+					style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
+				>
+					<div className="aui-chat-composer-area relative mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible">
+						<ChatScrollToBottom />
+						{footer}
+					</div>
+				</ThreadPrimitive.ViewportFooter>
+			</AuiIf>
 		) : null}
 	</ThreadPrimitive.Viewport>
 );

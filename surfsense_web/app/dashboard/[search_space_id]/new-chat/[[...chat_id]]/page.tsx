@@ -18,6 +18,7 @@ import { disabledToolsAtom } from "@/atoms/agent-tools/agent-tools.atoms";
 import {
 	clearTargetCommentIdAtom,
 	currentThreadAtom,
+	setCurrentThreadMetadataAtom,
 	setTargetCommentIdAtom,
 } from "@/atoms/chat/current-thread.atom";
 import {
@@ -36,7 +37,7 @@ import { closeReportPanelAtom } from "@/atoms/chat/report-panel.atom";
 import { type AgentCreatedDocument, agentCreatedDocumentsAtom } from "@/atoms/documents/ui.atoms";
 import { closeEditorPanelAtom } from "@/atoms/editor/editor-panel.atom";
 import { membersAtom } from "@/atoms/members/members-query.atoms";
-import { removeChatTabAtom, updateChatTabTitleAtom } from "@/atoms/tabs/tabs.atom";
+import { removeChatTabAtom, syncChatTabAtom, updateChatTabTitleAtom } from "@/atoms/tabs/tabs.atom";
 import { currentUserAtom } from "@/atoms/user/user-query.atoms";
 import {
 	EditMessageDialog,
@@ -50,6 +51,7 @@ import {
 	TokenUsageProvider,
 } from "@/components/assistant-ui/token-usage-context";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
 	type HitlDecision,
 	PendingInterruptProvider,
@@ -64,11 +66,13 @@ import {
 } from "@/hooks/use-agent-actions-query";
 import { useChatSessionStateSync } from "@/hooks/use-chat-session-state";
 import { useMessagesSync } from "@/hooks/use-messages-sync";
+import { useThreadDetail, useThreadMessages } from "@/hooks/use-thread-queries";
 import { getAgentFilesystemSelection } from "@/lib/agent-filesystem";
 import { documentsApiService } from "@/lib/apis/documents-api.service";
 import { getBearerToken } from "@/lib/auth-utils";
 import { type ChatFlow, classifyChatError } from "@/lib/chat/chat-error-classifier";
 import { tagPreAcceptSendFailure, toHttpResponseError } from "@/lib/chat/chat-request-errors";
+import { getMentionDocKey } from "@/lib/chat/mention-doc-key";
 import {
 	convertToThreadMessage,
 	reconcileInterruptedAssistantMessages,
@@ -99,8 +103,6 @@ import {
 	appendMessage,
 	createThread,
 	getRegenerateUrl,
-	getThreadFull,
-	getThreadMessages,
 	type ThreadListItem,
 	type ThreadListResponse,
 	type ThreadRecord,
@@ -109,6 +111,7 @@ import {
 	extractUserTurnForNewChatApi,
 	type NewChatUserImagePayload,
 } from "@/lib/chat/user-turn-api-parts";
+import { BACKEND_URL } from "@/lib/env-config";
 import { NotFoundError } from "@/lib/error";
 import {
 	trackChatBlocked,
@@ -117,8 +120,8 @@ import {
 	trackChatMessageSent,
 	trackChatResponseReceived,
 } from "@/lib/posthog/events";
-import Loading from "../loading";
-import { BACKEND_URL } from "@/lib/env-config";
+import { cacheKeys } from "@/lib/query-client/cache-keys";
+
 const MobileEditorPanel = dynamic(
 	() =>
 		import("@/components/editor-panel/editor-panel").then((m) => ({
@@ -206,11 +209,13 @@ function pairBundleToolCallIds(
 const MentionedDocumentInfoSchema = z.object({
 	id: z.number(),
 	title: z.string(),
-	document_type: z.string(),
+	document_type: z.string().optional(),
 	kind: z
-		.union([z.literal("doc"), z.literal("folder")])
+		.union([z.literal("doc"), z.literal("folder"), z.literal("connector")])
 		.optional()
 		.default("doc"),
+	connector_type: z.string().optional(),
+	account_name: z.string().optional(),
 });
 
 const MentionedDocumentsPartSchema = z.object({
@@ -227,7 +232,30 @@ function extractMentionedDocuments(content: unknown): MentionedDocumentInfo[] {
 	for (const part of content) {
 		const result = MentionedDocumentsPartSchema.safeParse(part);
 		if (result.success) {
-			return result.data.documents;
+			return result.data.documents.map<MentionedDocumentInfo>((doc) => {
+				if (doc.kind === "connector") {
+					return {
+						id: doc.id,
+						title: doc.title,
+						kind: "connector",
+						connector_type: doc.connector_type ?? doc.document_type ?? "UNKNOWN",
+						account_name: doc.account_name ?? doc.title,
+					};
+				}
+				if (doc.kind === "folder") {
+					return {
+						id: doc.id,
+						title: doc.title,
+						kind: "folder",
+					};
+				}
+				return {
+					id: doc.id,
+					title: doc.title,
+					document_type: doc.document_type ?? "UNKNOWN",
+					kind: "doc",
+				};
+			});
 		}
 	}
 
@@ -260,11 +288,78 @@ function computeFallbackTurnCancellingRetryDelay(attempt: number): number {
 	return Math.min(raw, TURN_CANCELLING_MAX_DELAY_MS);
 }
 
+function parseUrlChatId(id: string | string[] | undefined): number {
+	let parsed = 0;
+	if (Array.isArray(id) && id.length > 0) {
+		parsed = Number.parseInt(id[0], 10);
+	} else if (typeof id === "string") {
+		parsed = Number.parseInt(id, 10);
+	}
+	return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function ThreadMessagesSkeleton() {
+	return (
+		<div
+			className="aui-root aui-thread-root @container flex h-full min-h-0 flex-col bg-panel"
+			style={{
+				["--thread-max-width" as string]: "42rem",
+			}}
+		>
+			<div
+				className="aui-thread-viewport relative flex flex-1 min-h-0 flex-col overflow-y-auto px-4 scroll-smooth"
+				style={{ scrollbarGutter: "stable" }}
+			>
+				<div
+					aria-hidden
+					className="aui-chat-viewport-top-fade pointer-events-none sticky top-0 z-10 -mx-4 h-2 shrink-0 bg-gradient-to-b from-panel from-20% to-transparent"
+				/>
+				<div className="mx-auto w-full max-w-(--thread-max-width) flex flex-1 flex-col gap-6 py-8">
+					<div className="flex justify-end">
+						<Skeleton className="h-12 w-[65%] max-w-56 rounded-2xl" />
+					</div>
+
+					<div className="flex flex-col gap-2">
+						<Skeleton className="h-4 w-full" />
+						<Skeleton className="h-4 w-[85%]" />
+						<Skeleton className="h-18 w-[40%]" />
+					</div>
+
+					<div className="flex gap-2 justify-end">
+						<Skeleton className="h-12 w-[78%] max-w-72 rounded-2xl" />
+					</div>
+
+					<div className="flex flex-col gap-2">
+						<Skeleton className="h-10 w-[30%]" />
+						<Skeleton className="h-4 w-[90%]" />
+						<Skeleton className="h-6 w-[60%]" />
+					</div>
+
+					<div className="flex gap-2 justify-end">
+						<Skeleton className="h-12 w-[85%] max-w-96 rounded-2xl" />
+					</div>
+				</div>
+
+				<div
+					className="aui-chat-composer-footer sticky bottom-0 z-20 -mx-4 mt-auto flex flex-col items-stretch bg-gradient-to-t from-panel from-60% to-transparent px-4 pt-6"
+					style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
+				>
+					<div className="aui-chat-composer-area relative mx-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible">
+						<Skeleton className="h-28 w-full rounded-3xl" />
+					</div>
+				</div>
+			</div>
+		</div>
+	);
+}
+
 export default function NewChatPage() {
 	const params = useParams();
 	const queryClient = useQueryClient();
-	const [isInitializing, setIsInitializing] = useState(true);
-	const [threadId, setThreadId] = useState<number | null>(null);
+	const urlChatId = useMemo(() => parseUrlChatId(params.chat_id), [params.chat_id]);
+	const [threadId, setThreadId] = useState<number | null>(() => (urlChatId > 0 ? urlChatId : null));
+	const activeThreadId = urlChatId > 0 ? urlChatId : threadId;
+	const handledLoadErrorThreadRef = useRef<number | null>(null);
 	const [currentThread, setCurrentThread] = useState<ThreadRecord | null>(null);
 	const [messages, setMessages] = useState<ThreadMessageLike[]>([]);
 	const [isRunning, setIsRunning] = useState(false);
@@ -348,12 +443,14 @@ export default function NewChatPage() {
 	const mentionedDocuments = useAtomValue(mentionedDocumentsAtom);
 	const messageDocumentsMap = useAtomValue(messageDocumentsMapAtom);
 	const setMentionedDocuments = useSetAtom(mentionedDocumentsAtom);
-	const setCurrentThreadState = useSetAtom(currentThreadAtom);
+	const currentThreadState = useAtomValue(currentThreadAtom);
+	const setCurrentThreadMetadata = useSetAtom(setCurrentThreadMetadataAtom);
 	const setPremiumAlertForThread = useSetAtom(setPremiumAlertForThreadAtom);
 	const setTargetCommentId = useSetAtom(setTargetCommentIdAtom);
 	const clearTargetCommentId = useSetAtom(clearTargetCommentIdAtom);
 	const closeReportPanel = useSetAtom(closeReportPanelAtom);
 	const closeEditorPanel = useSetAtom(closeEditorPanelAtom);
+	const syncChatTab = useSetAtom(syncChatTabAtom);
 	const updateChatTabTitle = useSetAtom(updateChatTabTitleAtom);
 	const removeChatTab = useSetAtom(removeChatTabAtom);
 	const setAgentCreatedDocuments = useSetAtom(agentCreatedDocumentsAtom);
@@ -375,9 +472,11 @@ export default function NewChatPage() {
 	const { data: currentUser } = useAtomValue(currentUserAtom);
 	const { data: agentFlags } = useAtomValue(agentFlagsAtom);
 	const localFilesystemEnabled = agentFlags?.enable_desktop_local_filesystem === true;
+	const threadDetailQuery = useThreadDetail(activeThreadId);
+	const threadMessagesQuery = useThreadMessages(activeThreadId);
 
 	// Live collaboration: sync session state and messages via Zero
-	useChatSessionStateSync(threadId);
+	useChatSessionStateSync(activeThreadId);
 	const { data: membersData } = useAtomValue(membersAtom);
 
 	const handleSyncedMessagesUpdate = useCallback(
@@ -438,7 +537,7 @@ export default function NewChatPage() {
 		[isRunning, membersData]
 	);
 
-	useMessagesSync(threadId, handleSyncedMessagesUpdate);
+	useMessagesSync(activeThreadId, handleSyncedMessagesUpdate);
 
 	// Extract search_space_id from URL params
 	const searchSpaceId = useMemo(() => {
@@ -452,19 +551,7 @@ export default function NewChatPage() {
 	// per-turn Revert button all read). Hydrates from
 	// ``GET /threads/{id}/actions`` and is updated incrementally by the
 	// SSE handlers + revert-batch results below — no atom side-channel.
-	const { items: agentActionItems } = useAgentActionsQuery(threadId);
-
-	// Extract chat_id from URL params
-	const urlChatId = useMemo(() => {
-		const id = params.chat_id;
-		let parsed = 0;
-		if (Array.isArray(id) && id.length > 0) {
-			parsed = Number.parseInt(id[0], 10);
-		} else if (typeof id === "string") {
-			parsed = Number.parseInt(id, 10);
-		}
-		return Number.isNaN(parsed) ? 0 : parsed;
-	}, [params.chat_id]);
+	const { items: agentActionItems } = useAgentActionsQuery(activeThreadId);
 
 	const handleChatFailure = useCallback(
 		async ({
@@ -603,14 +690,19 @@ export default function NewChatPage() {
 		});
 	}, []);
 
-	// Initialize thread and load messages
-	// For new chats (no urlChatId), we use lazy creation - thread is created on first message
-	const initializeThread = useCallback(async () => {
-		setIsInitializing(true);
+	const hydratedMessagesRef = useRef<{
+		threadId: number | null;
+		data: typeof threadMessagesQuery.data;
+	}>({ threadId: null, data: undefined });
 
-		// Reset all state when switching between chats/search spaces to prevent stale data
+	// Reset thread-local runtime state on route/search-space changes. Data fetching
+	// is handled by React Query below so the chat shell can render immediately.
+	useEffect(() => {
+		const nextThreadId = urlChatId > 0 ? urlChatId : null;
+		handledLoadErrorThreadRef.current = null;
+		hydratedMessagesRef.current = { threadId: null, data: undefined };
+		setThreadId(nextThreadId);
 		setMessages([]);
-		setThreadId(null);
 		setCurrentThread(null);
 		setMentionedDocuments([]);
 		tokenUsageStore.clear();
@@ -620,82 +712,105 @@ export default function NewChatPage() {
 		closeEditorPanel();
 		// Note: agent-action data is keyed by threadId in react-query so
 		// switching threads naturally swaps caches; no explicit reset.
-
-		try {
-			if (urlChatId > 0) {
-				// Thread exists - load thread data and messages
-				setThreadId(urlChatId);
-
-				// Load thread data (for visibility info) and messages in parallel
-				const [threadData, messagesResponse] = await Promise.all([
-					getThreadFull(urlChatId),
-					getThreadMessages(urlChatId),
-				]);
-
-				setCurrentThread(threadData);
-
-				if (messagesResponse.messages && messagesResponse.messages.length > 0) {
-					const loadedMessages = reconcileInterruptedAssistantMessages(
-						messagesResponse.messages
-					).map(convertToThreadMessage);
-					setMessages(loadedMessages);
-
-					for (const msg of messagesResponse.messages) {
-						if (msg.token_usage) {
-							tokenUsageStore.set(`msg-${msg.id}`, msg.token_usage as TokenUsageData);
-						}
-					}
-
-					const restoredDocsMap: Record<string, MentionedDocumentInfo[]> = {};
-					for (const msg of messagesResponse.messages) {
-						if (msg.role === "user") {
-							const docs = extractMentionedDocuments(msg.content);
-							if (docs.length > 0) {
-								restoredDocsMap[`msg-${msg.id}`] = docs;
-							}
-						}
-					}
-					if (Object.keys(restoredDocsMap).length > 0) {
-						setMessageDocumentsMap(restoredDocsMap);
-					}
-				}
-			}
-			// For new chats (urlChatId === 0), don't create thread yet
-			// Thread will be created lazily when user sends first message
-			// This improves UX (instant load) and avoids orphan threads
-		} catch (error) {
-			console.error("[NewChatPage] Failed to initialize thread:", error);
-			if (urlChatId > 0 && error instanceof NotFoundError) {
-				removeChatTab(urlChatId);
-				if (typeof window !== "undefined") {
-					window.history.replaceState(null, "", `/dashboard/${searchSpaceId}/new-chat`);
-				}
-				toast.error("This chat was deleted.");
-				return;
-			}
-			// Keep threadId as null - don't use Date.now() as it creates an invalid ID
-			// that will cause 404 errors on subsequent API calls
-			setThreadId(null);
-			setCurrentThread(null);
-			toast.error("Failed to load chat. Please try again.");
-		} finally {
-			setIsInitializing(false);
-		}
 	}, [
 		urlChatId,
-		setMessageDocumentsMap,
 		setMentionedDocuments,
+		setMessageDocumentsMap,
+		tokenUsageStore,
 		closeReportPanel,
 		closeEditorPanel,
-		removeChatTab,
-		searchSpaceId,
+	]);
+
+	useEffect(() => {
+		if (!activeThreadId) {
+			setCurrentThread(null);
+			return;
+		}
+		if (threadDetailQuery.data?.id === activeThreadId) {
+			const thread = threadDetailQuery.data;
+			setCurrentThread(thread);
+			syncChatTab({
+				chatId: thread.id,
+				title: thread.title,
+				chatUrl: `/dashboard/${thread.search_space_id ?? searchSpaceId}/new-chat/${thread.id}`,
+				searchSpaceId: thread.search_space_id ?? searchSpaceId,
+				visibility: thread.visibility,
+				hasComments: thread.has_comments ?? false,
+			});
+		}
+	}, [activeThreadId, searchSpaceId, syncChatTab, threadDetailQuery.data]);
+
+	useEffect(() => {
+		const messagesResponse = threadMessagesQuery.data;
+		if (!activeThreadId || !messagesResponse) return;
+
+		if (
+			hydratedMessagesRef.current.threadId === activeThreadId &&
+			hydratedMessagesRef.current.data === messagesResponse
+		) {
+			return;
+		}
+
+		if (isRunning) {
+			return;
+		}
+
+		const loadedMessages = reconcileInterruptedAssistantMessages(messagesResponse.messages).map(
+			convertToThreadMessage
+		);
+		setMessages(loadedMessages);
+
+		tokenUsageStore.clear();
+		const restoredDocsMap: Record<string, MentionedDocumentInfo[]> = {};
+		for (const msg of messagesResponse.messages) {
+			if (msg.token_usage) {
+				tokenUsageStore.set(`msg-${msg.id}`, msg.token_usage as TokenUsageData);
+			}
+			if (msg.role === "user") {
+				const docs = extractMentionedDocuments(msg.content);
+				if (docs.length > 0) {
+					restoredDocsMap[`msg-${msg.id}`] = docs;
+				}
+			}
+		}
+		setMessageDocumentsMap(restoredDocsMap);
+		hydratedMessagesRef.current = { threadId: activeThreadId, data: messagesResponse };
+	}, [
+		activeThreadId,
+		isRunning,
+		setMessageDocumentsMap,
+		threadMessagesQuery.data,
 		tokenUsageStore,
 	]);
 
-	// Initialize on mount, and re-init when switching search spaces (even if urlChatId is the same)
 	useEffect(() => {
-		initializeThread();
-	}, [initializeThread]);
+		const loadError = threadDetailQuery.error ?? threadMessagesQuery.error;
+		if (!activeThreadId || !loadError) return;
+		if (handledLoadErrorThreadRef.current === activeThreadId) return;
+
+		handledLoadErrorThreadRef.current = activeThreadId;
+		console.error("[NewChatPage] Failed to load thread:", loadError);
+
+		if (loadError instanceof NotFoundError) {
+			removeChatTab(activeThreadId);
+			if (typeof window !== "undefined") {
+				window.history.replaceState(null, "", `/dashboard/${searchSpaceId}/new-chat`);
+			}
+			setThreadId(null);
+			setCurrentThread(null);
+			setMessages([]);
+			toast.error("This chat was deleted.");
+			return;
+		}
+
+		toast.error("Failed to load chat. Please try again.");
+	}, [
+		activeThreadId,
+		removeChatTab,
+		searchSpaceId,
+		threadDetailQuery.error,
+		threadMessagesQuery.error,
+	]);
 
 	// Prefetch document titles for @ mention picker
 	// Runs when user lands on page so data is ready when they type @
@@ -712,18 +827,6 @@ export default function NewChatPage() {
 			queryKey: ["document-titles", prefetchParams],
 			queryFn: () => documentsApiService.searchDocumentTitles({ queryParams: prefetchParams }),
 			staleTime: 60 * 1000,
-			// Prefetch opcional: erros não disparam o toast global do QueryClient
-			meta: { suppressGlobalErrorToast: true },
-		});
-
-		queryClient.prefetchQuery({
-			queryKey: ["surfsense-docs-mention", "", false],
-			queryFn: () =>
-				documentsApiService.getSurfsenseDocs({
-					queryParams: { page: 0, page_size: 20 },
-				}),
-			staleTime: 3 * 60 * 1000,
-			meta: { suppressGlobalErrorToast: true },
 		});
 	}, [searchSpaceId, queryClient]);
 
@@ -735,7 +838,7 @@ export default function NewChatPage() {
 		const readAndApplyCommentId = () => {
 			const params = new URLSearchParams(window.location.search);
 			const raw = params.get("commentId");
-			if (raw && !isInitializing) {
+			if (raw && activeThreadId) {
 				const commentId = Number.parseInt(raw, 10);
 				if (!Number.isNaN(commentId)) {
 					setTargetCommentId(commentId);
@@ -753,17 +856,42 @@ export default function NewChatPage() {
 			window.removeEventListener("popstate", readAndApplyCommentId);
 			clearTargetCommentId();
 		};
-	}, [isInitializing, setTargetCommentId, clearTargetCommentId]);
+	}, [activeThreadId, setTargetCommentId, clearTargetCommentId]);
 
 	// Sync current thread state to atom
 	useEffect(() => {
-		setCurrentThreadState((prev) => ({
-			...prev,
-			id: currentThread?.id ?? null,
-			visibility: currentThread?.visibility ?? null,
-			hasComments: currentThread?.has_comments ?? false,
-		}));
-	}, [currentThread, setCurrentThreadState]);
+		if (!currentThread) {
+			if (activeThreadId) {
+				return;
+			}
+			setCurrentThreadMetadata({
+				id: null,
+				searchSpaceId: null,
+				visibility: null,
+				hasComments: false,
+			});
+			return;
+		}
+
+		const visibility =
+			currentThreadState.id === currentThread.id && currentThreadState.visibility !== null
+				? currentThreadState.visibility
+				: currentThread.visibility;
+
+		setCurrentThreadMetadata({
+			id: currentThread.id,
+			searchSpaceId: currentThread.search_space_id ?? searchSpaceId,
+			visibility,
+			hasComments: currentThread.has_comments ?? false,
+		});
+	}, [
+		activeThreadId,
+		currentThread,
+		currentThreadState.id,
+		currentThreadState.visibility,
+		searchSpaceId,
+		setCurrentThreadMetadata,
+	]);
 
 	// Cleanup on unmount - abort any in-flight requests
 	useEffect(() => {
@@ -847,6 +975,8 @@ export default function NewChatPage() {
 					setThreadId(currentThreadId);
 					// Set currentThread so share button in header appears immediately
 					setCurrentThread(newThread);
+					queryClient.setQueryData(cacheKeys.threads.detail(newThread.id), newThread);
+					queryClient.setQueryData(cacheKeys.threads.messages(newThread.id), { messages: [] });
 
 					// Track chat creation
 					trackChatCreated(searchSpaceId, currentThreadId);
@@ -925,30 +1055,23 @@ export default function NewChatPage() {
 			trackChatMessageSent(searchSpaceId, currentThreadId, {
 				hasAttachments: userImages.length > 0,
 				hasMentionedDocuments:
-					mentionedDocumentIds.surfsense_doc_ids.length > 0 ||
 					mentionedDocumentIds.document_ids.length > 0 ||
-					mentionedDocumentIds.folder_ids.length > 0,
+					mentionedDocumentIds.folder_ids.length > 0 ||
+					mentionedDocumentIds.connector_ids.length > 0,
 				messageLength: userQuery.length,
 			});
 
 			// Collect unique mention chips for display & persistence.
-			// Dedup key is ``kind:document_type:id`` so a folder and a
-			// doc with the same integer id never collapse into one
-			// entry. The ``kind`` field is forwarded to the backend
+			// The ``kind`` field is forwarded to the backend
 			// so the persisted ``mentioned-documents`` content part
 			// can render the correct chip type on reload.
 			const allMentionedDocs: MentionedDocumentInfo[] = [];
 			const seenDocKeys = new Set<string>();
 			for (const doc of mentionedDocuments) {
-				const key = `${doc.kind}:${doc.document_type}:${doc.id}`;
+				const key = getMentionDocKey(doc);
 				if (seenDocKeys.has(key)) continue;
 				seenDocKeys.add(key);
-				allMentionedDocs.push({
-					id: doc.id,
-					title: doc.title,
-					document_type: doc.document_type,
-					kind: doc.kind,
-				});
+				allMentionedDocs.push(doc);
 			}
 
 			if (allMentionedDocs.length > 0) {
@@ -1009,11 +1132,11 @@ export default function NewChatPage() {
 
 				// Get mentioned document IDs for context (separate fields for backend)
 				const hasDocumentIds = mentionedDocumentIds.document_ids.length > 0;
-				const hasSurfsenseDocIds = mentionedDocumentIds.surfsense_doc_ids.length > 0;
 				const hasFolderIds = mentionedDocumentIds.folder_ids.length > 0;
+				const hasConnectorIds = mentionedDocumentIds.connector_ids.length > 0;
 
 				// Clear mentioned documents after capturing them
-				if (hasDocumentIds || hasSurfsenseDocIds || hasFolderIds) {
+				if (hasDocumentIds || hasFolderIds || hasConnectorIds) {
 					setMentionedDocuments([]);
 				}
 
@@ -1035,24 +1158,17 @@ export default function NewChatPage() {
 							mentioned_document_ids: hasDocumentIds
 								? mentionedDocumentIds.document_ids
 								: undefined,
-							mentioned_surfsense_doc_ids: hasSurfsenseDocIds
-								? mentionedDocumentIds.surfsense_doc_ids
-								: undefined,
 							mentioned_folder_ids: hasFolderIds ? mentionedDocumentIds.folder_ids : undefined,
+							mentioned_connector_ids: hasConnectorIds
+								? mentionedDocumentIds.connector_ids
+								: undefined,
+							mentioned_connectors: hasConnectorIds ? mentionedDocumentIds.connectors : undefined,
 							// Full mention metadata (docs + folders, with
 							// ``kind`` discriminator) so the BE can embed a
 							// ``mentioned-documents`` ContentPart on the
 							// persisted user message (replaces the old FE-side
 							// injection in ``persistUserTurn``).
-							mentioned_documents:
-								allMentionedDocs.length > 0
-									? allMentionedDocs.map((d) => ({
-											id: d.id,
-											title: d.title,
-											document_type: d.document_type,
-											kind: d.kind,
-										}))
-									: undefined,
+							mentioned_documents: allMentionedDocs.length > 0 ? allMentionedDocs : undefined,
 							disabled_tools: disabledTools.length > 0 ? disabledTools : undefined,
 							...(userImages.length > 0 ? { user_images: userImages } : {}),
 						}),
@@ -1368,6 +1484,14 @@ export default function NewChatPage() {
 			} finally {
 				setIsRunning(false);
 				abortControllerRef.current = null;
+				if (currentThreadId) {
+					void queryClient.invalidateQueries({
+						queryKey: cacheKeys.threads.messages(currentThreadId),
+					});
+					void queryClient.invalidateQueries({
+						queryKey: cacheKeys.threads.detail(currentThreadId),
+					});
+				}
 			}
 		},
 		[
@@ -1716,6 +1840,12 @@ export default function NewChatPage() {
 			} finally {
 				setIsRunning(false);
 				abortControllerRef.current = null;
+				void queryClient.invalidateQueries({
+					queryKey: cacheKeys.threads.messages(resumeThreadId),
+				});
+				void queryClient.invalidateQueries({
+					queryKey: cacheKeys.threads.detail(resumeThreadId),
+				});
 			}
 		},
 		[
@@ -1932,22 +2062,19 @@ export default function NewChatPage() {
 				const selection = await getAgentFilesystemSelection(searchSpaceId, {
 					localFilesystemEnabled,
 				});
-				// Partition the source mentions back into doc/surfsense_doc/folder
-				// id buckets so the regenerate route can pass them to
-				// ``stream_new_chat`` and the priority middleware sees the
-				// same ``[USER-MENTIONED]`` priority entries the original
-				// turn did. Without this partition the regenerate flow
-				// silently dropped the agent's mention awareness — same
-				// architectural bug we fixed on the new-chat path.
-				const regenerateSurfsenseDocIds = sourceMentionedDocs
-					.filter((d) => d.kind === "doc" && d.document_type === "SURFSENSE_DOCS")
-					.map((d) => d.id);
+				// Partition the source mentions back into doc/folder id buckets
+				// so the regenerate route can pass them to ``stream_new_chat``
+				// and the priority middleware sees the same ``[USER-MENTIONED]``
+				// priority entries the original turn did. Without this partition
+				// the regenerate flow silently dropped the agent's mention
+				// awareness — same architectural bug we fixed on the new-chat path.
 				const regenerateDocIds = sourceMentionedDocs
-					.filter((d) => d.kind === "doc" && d.document_type !== "SURFSENSE_DOCS")
+					.filter((d) => d.kind === "doc")
 					.map((d) => d.id);
 				const regenerateFolderIds = sourceMentionedDocs
 					.filter((d) => d.kind === "folder")
 					.map((d) => d.id);
+				const regenerateConnectors = sourceMentionedDocs.filter((d) => d.kind === "connector");
 
 				const requestBody: Record<string, unknown> = {
 					search_space_id: searchSpaceId,
@@ -1957,22 +2084,15 @@ export default function NewChatPage() {
 					client_platform: selection.client_platform,
 					local_filesystem_mounts: selection.local_filesystem_mounts,
 					mentioned_document_ids: regenerateDocIds.length > 0 ? regenerateDocIds : undefined,
-					mentioned_surfsense_doc_ids:
-						regenerateSurfsenseDocIds.length > 0 ? regenerateSurfsenseDocIds : undefined,
 					mentioned_folder_ids: regenerateFolderIds.length > 0 ? regenerateFolderIds : undefined,
+					mentioned_connector_ids:
+						regenerateConnectors.length > 0 ? regenerateConnectors.map((d) => d.id) : undefined,
+					mentioned_connectors: regenerateConnectors.length > 0 ? regenerateConnectors : undefined,
 					// Full mention metadata for the regenerate-specific
 					// source list. Only meaningful for edit (the BE only
 					// re-persists a user row when ``user_query`` is set);
 					// reload reuses the original turn's mentioned_documents.
-					mentioned_documents:
-						sourceMentionedDocs.length > 0
-							? sourceMentionedDocs.map((d) => ({
-									id: d.id,
-									title: d.title,
-									document_type: d.document_type,
-									kind: d.kind,
-								}))
-							: undefined,
+					mentioned_documents: sourceMentionedDocs.length > 0 ? sourceMentionedDocs : undefined,
 				};
 				if (isEdit) {
 					requestBody.user_images = editExtras?.userImages ?? [];
@@ -2219,6 +2339,12 @@ export default function NewChatPage() {
 			} finally {
 				setIsRunning(false);
 				abortControllerRef.current = null;
+				void queryClient.invalidateQueries({
+					queryKey: cacheKeys.threads.messages(threadId),
+				});
+				void queryClient.invalidateQueries({
+					queryKey: cacheKeys.threads.detail(threadId),
+				});
 			}
 		},
 		[
@@ -2405,22 +2531,25 @@ export default function NewChatPage() {
 		onCancel: cancelRun,
 	});
 
-	// Show loading state only when loading an existing thread
-	if (isInitializing) {
-		return <Loading />;
-	}
+	const threadLoadError = activeThreadId
+		? (threadDetailQuery.error ?? threadMessagesQuery.error)
+		: null;
+	const shouldShowThreadLoadError =
+		!!threadLoadError && !!activeThreadId && !currentThread && messages.length === 0;
+	const isThreadMessagesLoading =
+		!!activeThreadId &&
+		threadMessagesQuery.isPending &&
+		messages.length === 0 &&
+		!threadMessagesQuery.error;
 
-	// Show error state only if we tried to load an existing thread but failed
-	// For new chats (urlChatId === 0), threadId being null is expected (lazy creation)
-	if (!threadId && urlChatId > 0) {
+	if (shouldShowThreadLoadError) {
 		return (
 			<div className="flex h-full flex-col items-center justify-center gap-4">
 				<div className="text-destructive">Failed to load chat</div>
 				<Button
 					type="button"
 					onClick={() => {
-						setIsInitializing(true);
-						initializeThread();
+						void Promise.all([threadDetailQuery.refetch(), threadMessagesQuery.refetch()]);
 					}}
 				>
 					Try Again
@@ -2439,8 +2568,13 @@ export default function NewChatPage() {
 					onSubmit={handleApprovalSubmit}
 				>
 					<div key={searchSpaceId} className="flex h-full overflow-hidden">
-						<div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+						<div className="relative flex-1 flex flex-col min-w-0 overflow-hidden">
 							<Thread />
+							{isThreadMessagesLoading ? (
+								<div className="absolute inset-0 z-10 bg-panel">
+									<ThreadMessagesSkeleton />
+								</div>
+							) : null}
 						</div>
 						<MobileReportPanel />
 						<MobileEditorPanel />

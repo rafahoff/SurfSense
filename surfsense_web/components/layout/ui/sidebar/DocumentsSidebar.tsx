@@ -78,22 +78,18 @@ import { foldersApiService } from "@/lib/apis/folders-api.service";
 import { searchSpacesApiService } from "@/lib/apis/search-spaces-api.service";
 import { authenticatedFetch } from "@/lib/auth-utils";
 import { getMentionDocKey } from "@/lib/chat/mention-doc-key";
+import { BACKEND_URL } from "@/lib/env-config";
 import { uploadFolderScan } from "@/lib/folder-sync-upload";
 import { getSupportedExtensionsSet } from "@/lib/supported-extensions";
 import { queries } from "@/zero/queries/index";
 import { SidebarSlideOutPanel } from "./SidebarSlideOutPanel";
-import { BACKEND_URL } from "@/lib/env-config";
 
 const DesktopLocalTabContent = dynamic(
 	() => import("./DesktopLocalTabContent").then((mod) => mod.DesktopLocalTabContent),
 	{ ssr: false }
 );
 
-const NON_DELETABLE_DOCUMENT_TYPES: readonly string[] = [
-	"SURFSENSE_DOCS",
-	"USER_MEMORY",
-	"TEAM_MEMORY",
-];
+const NON_DELETABLE_DOCUMENT_TYPES: readonly string[] = ["USER_MEMORY", "TEAM_MEMORY"];
 const MEMORY_DOCUMENTS: DocumentNodeDoc[] = [
 	{
 		id: -1001,
@@ -640,7 +636,6 @@ function AuthenticatedDocumentsSidebarBase({
 					searchSpaceId,
 					excludePatterns: matched.excludePatterns ?? DEFAULT_EXCLUDE_PATTERNS,
 					fileExtensions: matched.fileExtensions ?? Array.from(getSupportedExtensionsSet()),
-					enableSummary: false,
 					rootFolderId: folder.id,
 				});
 				toast.success(`Re-scan complete: ${matched.name}`);
@@ -1080,6 +1075,7 @@ function AuthenticatedDocumentsSidebarBase({
 		const treeDocMap = new Map(treeDocuments.map((d) => [d.id, d]));
 		return sidebarDocs
 			.filter((doc) => {
+				if (doc.kind !== "doc") return false;
 				const fullDoc = treeDocMap.get(doc.id);
 				if (!fullDoc) return false;
 				const state = fullDoc.status?.state ?? "ready";
@@ -1141,7 +1137,7 @@ function AuthenticatedDocumentsSidebarBase({
 			try {
 				await deleteDocumentMutation({ id });
 				toast.success(t("delete_success") || "Document deleted");
-				setSidebarDocs((prev) => prev.filter((d) => d.id !== id));
+				setSidebarDocs((prev) => prev.filter((d) => d.kind !== "doc" || d.id !== id));
 				return true;
 			} catch (e) {
 				console.error("Error deleting document:", e);
@@ -1971,7 +1967,7 @@ function AnonymousDocumentsSidebar({
 						onEditDocument={() => gate("edit documents")}
 						onDeleteDocument={async () => {
 							handleRemoveDoc();
-							setSidebarDocs((prev) => prev.filter((d) => d.id !== -1));
+							setSidebarDocs((prev) => prev.filter((d) => d.kind !== "doc" || d.id !== -1));
 							return true;
 						}}
 						onMoveDocument={() => gate("organize documents")}

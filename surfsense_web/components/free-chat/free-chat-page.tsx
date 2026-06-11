@@ -15,6 +15,7 @@ import {
 	type TokenUsageData,
 	TokenUsageProvider,
 } from "@/components/assistant-ui/token-usage-context";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useAnonymousMode } from "@/contexts/anonymous-mode";
 import { TimelineDataUI } from "@/features/chat-messages/timeline";
 import {
@@ -36,6 +37,7 @@ import { BACKEND_URL } from "@/lib/env-config";
 import { trackAnonymousChatMessageSent } from "@/lib/posthog/events";
 import { FreeModelSelector } from "./free-model-selector";
 import { FreeThread } from "./free-thread";
+import { RemoveAdsBanner } from "./remove-ads-banner";
 
 // Render all tool calls via ToolFallback; backend keeps persisted
 // payloads bounded by summarising / truncating outputs.
@@ -101,11 +103,16 @@ export function FreeChatPage() {
 	const anonMode = useAnonymousMode();
 	const modelSlug = anonMode.isAnonymous ? anonMode.modelSlug : "";
 	const resetKey = anonMode.isAnonymous ? anonMode.resetKey : 0;
+	const webSearchEnabled = anonMode.isAnonymous ? anonMode.webSearchEnabled : true;
 
 	const [messages, setMessages] = useState<ThreadMessageLike[]>([]);
 	const [isRunning, setIsRunning] = useState(false);
 	const [tokenUsageStore] = useState(() => createTokenUsageStore());
 	const abortControllerRef = useRef<AbortController | null>(null);
+	// Mirror the latest messages into a ref so onNew stays a stable callback
+	// (it reads history on demand instead of depending on the array).
+	const messagesRef = useRef<ThreadMessageLike[]>([]);
+	messagesRef.current = messages;
 
 	// Turnstile CAPTCHA state
 	const [captchaRequired, setCaptchaRequired] = useState(false);
@@ -129,7 +136,7 @@ export function FreeChatPage() {
 		pendingRetryRef.current = null;
 	}, [resetKey, modelSlug, tokenUsageStore]);
 
-	const cancelRun = useCallback(() => {
+	const cancelRun = useCallback(async () => {
 		if (abortControllerRef.current) {
 			abortControllerRef.current.abort();
 			abortControllerRef.current = null;
@@ -152,6 +159,7 @@ export function FreeChatPage() {
 				model_slug: modelSlug,
 				messages: messageHistory,
 			};
+			if (!webSearchEnabled) reqBody.disabled_tools = ["web_search"];
 			if (turnstileToken) reqBody.turnstile_token = turnstileToken;
 
 			const response = await fetch(`${BACKEND_URL}/api/v1/public/anon-chat/stream`, {
@@ -301,7 +309,7 @@ export function FreeChatPage() {
 				throw err;
 			}
 		},
-		[modelSlug, tokenUsageStore]
+		[modelSlug, tokenUsageStore, webSearchEnabled]
 	);
 
 	const onNew = useCallback(
@@ -345,7 +353,7 @@ export function FreeChatPage() {
 				},
 			]);
 
-			const messageHistory = messages
+			const messageHistory = messagesRef.current
 				.filter((m) => m.role === "user" || m.role === "assistant")
 				.map((m) => {
 					let text = "";
@@ -395,7 +403,7 @@ export function FreeChatPage() {
 				abortControllerRef.current = null;
 			}
 		},
-		[messages, doStream]
+		[modelSlug, anonMode, doStream]
 	);
 
 	/** Called when Turnstile resolves successfully. Stores the token and auto-retries. */
@@ -480,20 +488,24 @@ export function FreeChatPage() {
 						<FreeModelSelector />
 					</div>
 
+					<RemoveAdsBanner />
+
 					{captchaRequired && TURNSTILE_SITE_KEY && (
-						<div className="flex flex-col items-center gap-3 border-b border-border/40 bg-muted/30 py-4">
-							<div className="flex items-center gap-2 text-sm text-muted-foreground">
-								<ShieldCheck className="h-4 w-4" />
-								<span>Quick verification to continue chatting</span>
-							</div>
-							<Turnstile
-								ref={turnstileRef}
-								siteKey={TURNSTILE_SITE_KEY}
-								onSuccess={handleTurnstileSuccess}
-								onError={() => turnstileRef.current?.reset()}
-								onExpire={() => turnstileRef.current?.reset()}
-								options={{ theme: "auto", size: "normal" }}
-							/>
+						<div className="flex justify-center border-b bg-muted/30 px-4 py-4">
+							<Alert className="w-auto max-w-md">
+								<ShieldCheck />
+								<AlertTitle>Quick verification to continue chatting</AlertTitle>
+								<AlertDescription>
+									<Turnstile
+										ref={turnstileRef}
+										siteKey={TURNSTILE_SITE_KEY}
+										onSuccess={handleTurnstileSuccess}
+										onError={() => turnstileRef.current?.reset()}
+										onExpire={() => turnstileRef.current?.reset()}
+										options={{ theme: "auto", size: "normal" }}
+									/>
+								</AlertDescription>
+							</Alert>
 						</div>
 					)}
 

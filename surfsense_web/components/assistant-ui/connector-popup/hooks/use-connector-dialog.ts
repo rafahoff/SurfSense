@@ -14,7 +14,9 @@ import { activeSearchSpaceIdAtom } from "@/atoms/search-spaces/search-space-quer
 import { EnumConnectorName } from "@/contracts/enums/connector";
 import type { SearchSourceConnector } from "@/contracts/types/connector.types";
 import { searchSourceConnector } from "@/contracts/types/connector.types";
+import { OAUTH_RESULT_COOKIE, parseOAuthCallbackResult } from "@/contracts/types/oauth.types";
 import { authenticatedFetch } from "@/lib/auth-utils";
+import { BACKEND_URL } from "@/lib/env-config";
 import {
 	trackConnectorConnected,
 	trackConnectorDeleted,
@@ -36,15 +38,12 @@ import {
 	OAUTH_CONNECTORS,
 	OTHER_CONNECTORS,
 } from "../constants/connector-constants";
-
 import {
 	dateRangeSchema,
 	frequencyMinutesSchema,
 	parseOAuthAuthResponse,
 	validateIndexingConfigState,
 } from "../constants/connector-popup.schemas";
-import { BACKEND_URL } from "@/lib/env-config";
-const OAUTH_RESULT_COOKIE = "connector_oauth_result";
 
 function readOAuthResultCookie(): string | null {
 	const match = document.cookie
@@ -83,7 +82,6 @@ export const useConnectorDialog = () => {
 	const [isStartingIndexing, setIsStartingIndexing] = useState(false);
 	const [periodicEnabled, setPeriodicEnabled] = useState(false);
 	const [frequencyMinutes, setFrequencyMinutes] = useState("1440");
-	const [enableSummary, setEnableSummary] = useState(false);
 	const [enableVisionLlm, setEnableVisionLlm] = useState(false);
 
 	// Edit mode state
@@ -211,17 +209,8 @@ export const useConnectorDialog = () => {
 		if (!raw || !searchSpaceId) return;
 		clearOAuthResultCookie();
 
-		let result: {
-			success: string | null;
-			error: string | null;
-			connector: string | null;
-			connectorId: string | null;
-		};
-		try {
-			result = JSON.parse(raw);
-		} catch {
-			return;
-		}
+		const result = parseOAuthCallbackResult(raw);
+		if (!result) return;
 
 		if (result.error) {
 			const oauthConnector = result.connector
@@ -428,7 +417,6 @@ export const useConnectorDialog = () => {
 					periodic_indexing_enabled: false,
 					indexing_frequency_minutes: null,
 					next_scheduled_at: null,
-					enable_summary: false,
 					enable_vision_llm: false,
 				},
 				queryParams: {
@@ -530,7 +518,6 @@ export const useConnectorDialog = () => {
 						connector_type: connectorData.connector_type as EnumConnectorName,
 						is_active: true,
 						next_scheduled_at: connectorData.next_scheduled_at as string | null,
-						enable_summary: false,
 						enable_vision_llm: false,
 					},
 					queryParams: {
@@ -667,7 +654,6 @@ export const useConnectorDialog = () => {
 									setConnectorConfig(connector.config || {});
 									setPeriodicEnabled(false);
 									setFrequencyMinutes("1440");
-									setEnableSummary(connector.enable_summary ?? false);
 									setEnableVisionLlm(connector.enable_vision_llm ?? false);
 									setStartDate(undefined);
 									setEndDate(undefined);
@@ -816,13 +802,12 @@ export const useConnectorDialog = () => {
 				const startDateStr = startDate ? format(startDate, "yyyy-MM-dd") : undefined;
 				const endDateStr = endDate ? format(endDate, "yyyy-MM-dd") : undefined;
 
-				// Update connector with summary, periodic sync settings, and config changes
-				if (enableSummary || enableVisionLlm || periodicEnabled || indexingConnectorConfig) {
+				// Update connector with vision, periodic sync settings, and config changes
+				if (enableVisionLlm || periodicEnabled || indexingConnectorConfig) {
 					const frequency = periodicEnabled ? parseInt(frequencyMinutes, 10) : undefined;
 					await updateConnector({
 						id: indexingConfig.connectorId,
 						data: {
-							enable_summary: enableSummary,
 							enable_vision_llm: enableVisionLlm,
 							...(periodicEnabled && {
 								periodic_indexing_enabled: true,
@@ -950,7 +935,6 @@ export const useConnectorDialog = () => {
 			updateConnector,
 			periodicEnabled,
 			frequencyMinutes,
-			enableSummary,
 			enableVisionLlm,
 			indexingConnectorConfig,
 			setIsOpen,
@@ -1015,7 +999,6 @@ export const useConnectorDialog = () => {
 			setConnectorName(connector.name);
 			setPeriodicEnabled(!connector.is_indexable ? false : connector.periodic_indexing_enabled);
 			setFrequencyMinutes(connector.indexing_frequency_minutes?.toString() || "1440");
-			setEnableSummary(connector.enable_summary ?? false);
 			setEnableVisionLlm(connector.enable_vision_llm ?? false);
 			setStartDate(undefined);
 			setEndDate(undefined);
@@ -1094,7 +1077,6 @@ export const useConnectorDialog = () => {
 					id: editingConnector.id,
 					data: {
 						name: connectorName || editingConnector.name,
-						enable_summary: enableSummary,
 						enable_vision_llm: enableVisionLlm,
 						periodic_indexing_enabled: !editingConnector.is_indexable ? false : periodicEnabled,
 						indexing_frequency_minutes: !editingConnector.is_indexable ? null : frequency,
@@ -1229,7 +1211,6 @@ export const useConnectorDialog = () => {
 			updateConnector,
 			periodicEnabled,
 			frequencyMinutes,
-			enableSummary,
 			enableVisionLlm,
 			getFrequencyLabel,
 			connectorConfig,
@@ -1390,7 +1371,6 @@ export const useConnectorDialog = () => {
 					setEndDate(undefined);
 					setPeriodicEnabled(false);
 					setFrequencyMinutes("1440");
-					setEnableSummary(false);
 					setEnableVisionLlm(false);
 				}
 			}
@@ -1427,7 +1407,6 @@ export const useConnectorDialog = () => {
 		isDisconnecting,
 		periodicEnabled,
 		frequencyMinutes,
-		enableSummary,
 		enableVisionLlm,
 		searchSpaceId,
 		allConnectors,
@@ -1442,7 +1421,6 @@ export const useConnectorDialog = () => {
 		setEndDate,
 		setPeriodicEnabled,
 		setFrequencyMinutes,
-		setEnableSummary,
 		setEnableVisionLlm,
 		setConnectorName,
 
